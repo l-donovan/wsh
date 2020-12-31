@@ -109,26 +109,31 @@ int cmd_execute(char **args) {
 }
 
 char** cmd_tokenize(char *cmd) {
-    char** tokens = (char**) malloc(ARG_BUF_SIZE * sizeof(char*));
+    std::smatch match;
+    std::regex whitespace("\\s+" + not_in_quotes);
+    std::string input(cmd);
+    std::string arg;
+    input += ' ';
+    std::string::const_iterator search_start(input.cbegin());
+    unsigned int argc = 0;
+
+    std::ptrdiff_t const match_count(std::distance(
+        std::sregex_iterator(input.begin(), input.end(), whitespace),
+        std::sregex_iterator()));
+
+    char** tokens = (char**) malloc((match_count + 1) * sizeof(char*));
 
     if (!tokens) {
         perror("Error when allocating arguments buffer");
         exit(EXIT_FAILURE);
     }
 
-    std::string buf(cmd);
-    buf += ' ';
+    while (regex_search(search_start, input.cend(), match, whitespace)) {
+        arg = match.prefix();
 
-    size_t pos = 0;
-    std::string arg;
-    unsigned int argc = 0;
-    while ((pos = buf.find_first_of(" \t")) != std::string::npos) {
-        arg = buf.substr(0, pos);
-        buf.erase(0, pos + 1);
-
-        // In case this is an empty argument, usually caused by trailing whitespace
-        if (pos == 0) {
-            continue;
+        // Trim the quotes off of a string argument
+        if (arg.at(0) == '"' && arg.at(arg.length() - 1) == '"') {
+            arg = arg.substr(1, arg.length() - 2);
         }
 
         // If we are looking at the command itself...
@@ -155,18 +160,12 @@ char** cmd_tokenize(char *cmd) {
         // Copy the C string to the allocated memory
         strcpy(tokens[argc], arg.c_str());
 
-        // Check if we need to expand our argument buffer
-        if (++argc >= ARG_BUF_SIZE) {
-            tokens = (char**) realloc(tokens, (argc + 1) * sizeof(char*));
+        ++argc;
 
-            if (!tokens) {
-                perror("Error when reallocating argument buffer");
-                exit(EXIT_FAILURE);
-            }
-        }
+        search_start = match.suffix().first;
     }
 
-    tokens[argc] = NULL;
+    tokens[match_count] = nullptr;
 
     return tokens;
 }

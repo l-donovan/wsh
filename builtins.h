@@ -1,13 +1,14 @@
 #pragma once
 
 namespace builtins {
-    int exit(char **args);
-    int cd(char **args);
-    int about(char **args);
-    int cand(char **args);
-    int cor(char **args);
-    int out(char **args);
-    int err(char **args);
-    int in(char **args);
+    int bexit(char **args);
+    int bcd(char **args);
+    int babout(char **args);
+    int band(char **args);
+    int bor(char **args);
+    int bredirect(char **args);
+    int bsilence(char **args);
+    int bset(char **args);
+    int breload(char **args);
 }
 

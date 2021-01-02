@@ -11,7 +11,9 @@ char lwd[PATH_SIZE];
 char twd[PATH_SIZE];
 
 namespace builtins {
-    int exit(char **args) {
+    int bexit(char **args) {
+        std::cout << "Goodbye!" << std::endl;
+
         if (args[1] == nullptr) {
             return CODE_EXIT_OK;
         } else {
@@ -19,7 +21,7 @@ namespace builtins {
         }
     }
 
-    int cd(char **args) {
+    int bcd(char **args) {
         getcwd(twd, PATH_SIZE);
 
         if (strcmp(args[1], "-") == 0) {
@@ -34,14 +36,14 @@ namespace builtins {
         return CODE_CONTINUE;
     }
 
-    int about(char **args) {
+    int babout(char **args) {
         std::cout << "Welcome to WebShell (wsh)!" << std::endl;
         std::cout << "Created by Luke Donovan" << std::endl;
 
         return CODE_CONTINUE;
     }
 
-    int cand(char **args) {
+    int band(char **args) {
         if (last_status > 0) {
             skip_next = true;
         }
@@ -49,7 +51,7 @@ namespace builtins {
         return CODE_CONTINUE;
     }
 
-    int cor(char **args) {
+    int bor(char **args) {
         if (last_status == 0) {
             skip_next = true;
         }
@@ -57,21 +59,25 @@ namespace builtins {
         return CODE_CONTINUE;
     }
 
-    int out(char **args) {
-        std::cout << args[0] << std::endl;
-        std::cout << args[1] << std::endl;
-        std::cout << args[2] << std::endl;
+    int bredirect(char **args) {
+        return CODE_CONTINUE;
+    }
 
-        std::cout << last_status << std::endl;
+    int bsilence(char **args) {
+        echo_input = strcmp(args[1], "true");
 
         return CODE_CONTINUE;
     }
 
-    int err(char **args) {
+    int bset(char **args) {
+        setenv(args[1], args[2], true);
+
         return CODE_CONTINUE;
     }
 
-    int in(char **args) {
+    int breload(char **args) {
+        // TODO Implement PATH reloading
+
         return CODE_CONTINUE;
     }
 }

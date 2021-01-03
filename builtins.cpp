@@ -80,4 +80,21 @@ namespace builtins {
 
         return CODE_CONTINUE;
     }
+
+    int balias(char **args) {
+        std::string name(args[1]);
+        std::string val(args[2]);
+
+        alias_map.emplace(name, val);
+
+        return CODE_CONTINUE;
+    }
+
+    int bunalias(char **args) {
+        std::string name(args[1]);
+
+        alias_map.erase(name);
+
+        return CODE_CONTINUE;
+    }
 }

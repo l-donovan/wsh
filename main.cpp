@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <pwd.h>
 #include <regex>
 #include <string>
 #include <sys/types.h>
@@ -22,18 +23,21 @@ char prompt[PROMPT_SIZE];
 
 unsigned int cmd_buf_len = 0;
 unsigned int esc_buf_len = 0;
-unsigned int last_status;
+unsigned int last_status = 0;
 unsigned int history_idx = 0;
 
+bool echo_input  = true;
 bool esc_seq     = false;
 bool skip_next   = false;
-bool echo_input  = true;
 bool pipe_input  = false;
 bool pipe_output = false;
 bool suggesting  = false;
 
 int pipefd_input[2];
 int pipefd_output[2];
+
+struct passwd *pw = getpwuid(getuid());
+const char *homedir = pw->pw_dir;
 
 std::map<std::string, std::string> executable_map;
 std::map<std::string, std::string> alias_map;
@@ -48,7 +52,9 @@ std::map<std::string, int (*)(char**)> builtins_map = {
     { "redirect", builtins::bredirect },
     { "silence",  builtins::bsilence },
     { "set",      builtins::bset },
-    { "reload",   builtins::breload }
+    { "reload",   builtins::breload },
+    { "alias",    builtins::balias },
+    { "unalias",  builtins::bunalias }
 };
 
 // This is a lookahead assertion that makes sure we aren't inside of a string
@@ -192,13 +198,20 @@ char** cmd_tokenize(char *cmd) {
 
         // If we are looking at the command itself...
         if (argc == 0) {
+            // and the command has an alias...
+            auto alias = alias_map.find(arg);
+            if (alias != alias_map.end()) {
+                // substitute the alias
+                arg = alias->second;
+            }
+
             // and the command isn't a builtin...
             if (builtins_map.find(arg) == builtins_map.end()) {
-                // and the command is in PATH...
-                auto it = executable_map.find(arg);
-                if (it != executable_map.end()) {
+                // and it's on PATH...
+                auto executable = executable_map.find(arg);
+                if (executable != executable_map.end()) {
                     // expand it to its full path
-                    arg = executable_map.find(arg)->second;
+                    arg = executable->second;
                 }
             }
         }
@@ -281,6 +294,17 @@ void replace_variables(std::string &input) {
         std::string var(c_var ?: "");
         output.replace(match.position() + offset, match.length(), var);
         offset += match.position() + var.length();
+        search_start = match.suffix().first;
+    }
+
+    std::regex tilde("~");
+    search_start = input.cbegin();
+    std::string home(homedir);
+    offset = 0;
+
+    while (regex_search(search_start, input.cend(), match, tilde)) {
+        output.replace(match.position() + offset, match.length(), home);
+        offset += match.position() + home.length();
         search_start = match.suffix().first;
     }
 

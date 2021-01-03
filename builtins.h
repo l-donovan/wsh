@@ -10,5 +10,7 @@ namespace builtins {
     int bsilence(char **args);
     int bset(char **args);
     int breload(char **args);
+    int balias(char **args);
+    int bunalias(char **args);
 }
 

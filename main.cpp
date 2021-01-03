@@ -23,18 +23,21 @@ char prompt[PROMPT_SIZE];
 unsigned int cmd_buf_len = 0;
 unsigned int esc_buf_len = 0;
 unsigned int last_status;
+unsigned int history_idx = 0;
 
 bool esc_seq     = false;
 bool skip_next   = false;
 bool echo_input  = true;
 bool pipe_input  = false;
 bool pipe_output = false;
+bool suggesting  = false;
 
 int pipefd_input[2];
 int pipefd_output[2];
 
 std::map<std::string, std::string> executable_map;
 std::map<std::string, std::string> alias_map;
+std::vector<std::string> history;
 
 std::map<std::string, int (*)(char**)> builtins_map = {
     { "exit",     builtins::bexit },
@@ -221,17 +224,40 @@ char** cmd_tokenize(char *cmd) {
     return tokens;
 }
 
+void suggest(int direction) {
+    if (history.empty())
+        return;
+
+    // Only change history_idx if we are already suggesting
+    if (suggesting) {
+        if (direction == DIRECTION_UP && history_idx < history.size() - 1)
+            ++history_idx;
+        if (direction == DIRECTION_DOWN && history_idx > 0)
+            --history_idx;
+    }
+
+    std::string suggestion = history.at(history_idx);
+    strcpy(cmd_buf, suggestion.c_str());
+
+    // Move back to right after the prompt, then clear the line and print our suggestion
+    std::cout << "\e[" << (cmd_buf_len + suggesting - 1) << "D\e[K";
+    std::cout << cmd_buf;
+
+    cmd_buf_len = suggestion.length();
+    suggesting = true;
+}
+
 bool process_esc_seq() {
     std::cmatch cm;
 
     if (std::regex_match(esc_buf, cm, std::regex("\\[([ABCD])"))) {
-        if (cm[1] == "A") {
-            std::cout << "UP" << std::endl;
-        } else if (cm[1] == "B") {
-            std::cout << "DOWN" << std::endl;
-        } else if (cm[1] == "C") {
+        if (cm[1] == "A") { // UP
+            suggest(DIRECTION_UP);
+        } else if (cm[1] == "B") { // DOWN
+            suggest(DIRECTION_DOWN);
+        } else if (cm[1] == "C") { // RIGHT
             std::cout << "RIGHT" << std::endl;
-        } else if (cm[1] == "D") {
+        } else if (cm[1] == "D") { // LEFT
             std::cout << "LEFT" << std::endl;
         }
 
@@ -262,15 +288,13 @@ void replace_variables(std::string &input) {
 }
 
 void process_cmd() {
-    if (!cmd_buf_len) {
-        // No point in running an empty command
+    // No point in running an empty command
+    if (!cmd_buf_len)
         return;
-    }
 
-    if (cmd_buf[0] == '#') {
-        // Comments are easy enough to handle
+    // Comments are easy enough to handle
+    if (cmd_buf[0] == '#')
         return;
-    }
 
     // Commands are delimited by semicolons or pipes
     std::smatch match;
@@ -317,11 +341,20 @@ int main(int argc, char **argv) {
 
     setenv("SHELL", "wsh", true);
 
+    // Loading from script
+    if (argc > 1) {
+        FILE *fp = fopen(argv[1], "r");
+        if (fp != nullptr) {
+            dup2(fileno(fp), STDIN_FILENO);
+            echo_input = false;
+        }
+    }
+
     // Setup our pipes
     pipe(pipefd_input);
     pipe(pipefd_output);
 
-    std::cout << prompt;
+    if (echo_input) std::cout << prompt;
 
     while ((ch = getch()) != EOF) {
         if (esc_seq) {
@@ -330,9 +363,8 @@ int main(int argc, char **argv) {
                 esc_buf[esc_buf_len++] = ch;
 
                 // If we aren't done yet, move along
-                if (!process_esc_seq()) {
+                if (!process_esc_seq())
                     continue;
-                }
             } else {
                 // Escape sequence is too large
                 perror("Escape buffer reached maximum size");
@@ -356,8 +388,11 @@ int main(int argc, char **argv) {
                 case 0x0a: // NEWLINE
                     if (echo_input) std::cout << std::endl;
                     process_cmd();
+                    history_idx = 0;
+                    history.insert(history.begin(), std::string(cmd_buf));
                     memset(cmd_buf, 0, CMD_BUF_SIZE);
                     cmd_buf_len = 0;
+                    suggesting = false;
                     if (echo_input) std::cout << prompt;
                     break;
                 default:

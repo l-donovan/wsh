@@ -1,0 +1,5 @@
+#!/Users/ldonovan/projects/wsh/wsh
+
+echo "Welcome to wsh!" | cowsay
+
+exit

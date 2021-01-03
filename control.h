@@ -14,6 +14,9 @@
 #define READ_END  0
 #define WRITE_END 1
 
+#define DIRECTION_UP   0
+#define DIRECTION_DOWN 1
+
 extern unsigned int last_status;
 extern bool skip_next;
 extern bool echo_input;

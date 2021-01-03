@@ -53,3 +53,4 @@ void trim(std::string &s) {
         return !std::isspace(ch);
     }).base(), s.end());
 }
+

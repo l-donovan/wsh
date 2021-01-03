@@ -131,7 +131,7 @@ int cmd_execute(char **args) {
 
         if (execv(args[0], args) == -1) {
             // We would update some sort of status here or something
-            perror("Error when running child process");
+            perror(args[0]);
         }
         exit(EXIT_FAILURE);
     } else if (pid < 0) {

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <pwd.h>
@@ -15,7 +16,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-char ch;
+void process_keypress(char);
+
+char c;
 char cmd_buf[CMD_BUF_SIZE];
 char esc_buf[ESC_BUF_SIZE];
 char out_buf[OUT_BUF_SIZE];
@@ -72,6 +75,20 @@ void files_in_dir(std::string path) {
     }
 }
 
+inline bool file_exists(const std::string& name) {
+    struct stat buffer;
+    return stat(name.c_str(), &buffer) == 0;
+}
+
+void execute_script(std::string filename) {
+    echo_input = false;
+    std::fstream fin(filename, std::fstream::in);
+    while (fin >> std::noskipws >> c) {
+        process_keypress(c);
+    }
+    echo_input = true;
+}
+
 void load_path() {
     const char* c_path = std::getenv("PATH");
 
@@ -98,6 +115,24 @@ void load_prompt() {
     } else {
         // Here's where we'd actually handle prompt replacement
         strcpy(prompt, raw_prompt);
+    }
+}
+
+void load_rc() {
+    std::string home_path(homedir);
+    home_path += '/';
+    home_path += RC_FILENAME;
+
+    std::string local_path(".");
+    local_path += '/';
+    local_path += RC_FILENAME;
+
+    if (file_exists(home_path)) {
+        execute_script(home_path);
+    }
+
+    if (file_exists(local_path)) {
+        execute_script(local_path);
     }
 }
 
@@ -359,72 +394,79 @@ void process_cmd() {
     }
 }
 
+void process_keypress(char ch) {
+    if (esc_seq) {
+        if (esc_buf_len < ESC_BUF_SIZE - 1) {
+            // Add our newest character
+            esc_buf[esc_buf_len++] = ch;
+
+            // If we aren't done yet, move along
+            if (!process_esc_seq())
+                return;
+        } else {
+            // Escape sequence is too large
+            perror("Escape buffer reached maximum size");
+        }
+
+        // Clear the buffer, reset the pointer
+        memset(esc_buf, 0, ESC_BUF_SIZE);
+        esc_buf_len = 0;
+        esc_seq = false;
+    } else {
+        switch (ch) {
+            case 0x1b: // ESCAPE
+                esc_seq = true;
+                break;
+            case 0x7f: // BACKSPACE (DELETE)
+                if (cmd_buf_len) {
+                    if (echo_input)
+                        std::cout << "\x08 \x08";
+                    cmd_buf[--cmd_buf_len] = 0;
+                }
+                break;
+            case 0x0a: // NEWLINE
+                if (echo_input)
+                    std::cout << std::endl;
+                process_cmd();
+                history_idx = 0;
+                history.insert(history.begin(), std::string(cmd_buf));
+                memset(cmd_buf, 0, CMD_BUF_SIZE);
+                cmd_buf_len = 0;
+                suggesting = false;
+                if (echo_input)
+                    std::cout << prompt;
+                break;
+            default:
+                if (echo_input)
+                    std::cout << ch;
+                cmd_buf[cmd_buf_len++] = ch;
+                break;
+        }
+    }
+}
+
 int main(int argc, char **argv) {
+    load_rc();
     load_path();
     load_prompt();
 
     setenv("SHELL", "wsh", true);
 
-    // Loading from script
-    if (argc > 1) {
-        FILE *fp = fopen(argv[1], "r");
-        if (fp != nullptr) {
-            dup2(fileno(fp), STDIN_FILENO);
-            echo_input = false;
-        }
-    }
-
     // Setup our pipes
     pipe(pipefd_input);
     pipe(pipefd_output);
 
-    if (echo_input) std::cout << prompt;
+    // Loading from script
+    if (argc > 1) {
+        execute_script(std::string(argv[1]));
+        return 0;
+    }
 
-    while ((ch = getch()) != EOF) {
-        if (esc_seq) {
-            if (esc_buf_len < ESC_BUF_SIZE - 1) {
-                // Add our newest character
-                esc_buf[esc_buf_len++] = ch;
+    if (echo_input)
+        std::cout << prompt;
 
-                // If we aren't done yet, move along
-                if (!process_esc_seq())
-                    continue;
-            } else {
-                // Escape sequence is too large
-                perror("Escape buffer reached maximum size");
-            }
-
-            // Clear the buffer, reset the pointer
-            memset(esc_buf, 0, ESC_BUF_SIZE);
-            esc_buf_len = 0;
-            esc_seq = false;
-        } else {
-            switch (ch) {
-                case 0x1b: // ESCAPE
-                    esc_seq = true;
-                    break;
-                case 0x7f: // BACKSPACE (DELETE)
-                    if (cmd_buf_len) {
-                        if (echo_input) std::cout << "\x08 \x08";
-                        cmd_buf[--cmd_buf_len] = 0;
-                    }
-                    break;
-                case 0x0a: // NEWLINE
-                    if (echo_input) std::cout << std::endl;
-                    process_cmd();
-                    history_idx = 0;
-                    history.insert(history.begin(), std::string(cmd_buf));
-                    memset(cmd_buf, 0, CMD_BUF_SIZE);
-                    cmd_buf_len = 0;
-                    suggesting = false;
-                    if (echo_input) std::cout << prompt;
-                    break;
-                default:
-                    if (echo_input) std::cout << ch;
-                    cmd_buf[cmd_buf_len++] = ch;
-                    break;
-            }
-        }
+    while ((c = getch()) != EOF) {
+        process_keypress(c);
     }
 
     return 0;

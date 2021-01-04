@@ -8,3 +8,4 @@
 #define PATH_SIZE 4096
 
 #define DEFAULT_PROMPT "$ "
+#define RC_FILENAME ".wshrc"

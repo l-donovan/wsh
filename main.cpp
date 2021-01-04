@@ -32,7 +32,6 @@ char** cmd_tokenize(char*);
 char c;
 char cmd_buf[CMD_BUF_SIZE];
 char esc_buf[ESC_BUF_SIZE];
-char out_buf[OUT_BUF_SIZE];
 char prompt[PROMPT_SIZE];
 
 unsigned int cmd_buf_len = 0;
@@ -467,7 +466,7 @@ int main(int argc, char **argv) {
     load_path();
     load_prompt();
 
-    setenv("SHELL", "wsh", true);
+    setenv("SHELL", SHELL_NAME, true);
 
     // Setup our pipes
     pipe(pipefd_input);

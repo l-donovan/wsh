@@ -16,7 +16,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+void load_path();
+void load_prompt();
+void load_rc();
 void process_keypress(char);
+void process_cmd();
+bool process_esc_seq();
+void files_in_dir(std::string);
+void execute_script(std::string);
+void suggest(int);
+void replace_variables(std::string&);
+int cmd_execute(char**);
+char** cmd_tokenize(char*);
 
 char c;
 char cmd_buf[CMD_BUF_SIZE];
@@ -45,6 +56,7 @@ const char *homedir = pw->pw_dir;
 std::map<std::string, std::string> executable_map;
 std::map<std::string, std::string> alias_map;
 std::vector<std::string> history;
+std::string cmd_str;
 
 std::map<std::string, int (*)(char**)> builtins_map = {
     { "exit",     builtins::bexit },
@@ -429,8 +441,13 @@ void process_keypress(char ch) {
                     std::cout << std::endl;
                 process_cmd();
                 history_idx = 0;
-                history.insert(history.begin(), std::string(cmd_buf));
-                memset(cmd_buf, 0, CMD_BUF_SIZE);
+                cmd_str = cmd_buf;
+                // If this command is running silently, we don't want it in our history.
+                // We also don't want it in our history if this command is the same as the
+                // last non-silent command we executed.
+                if (echo_input && (history.empty() || history.front() != cmd_str))
+                    history.insert(history.begin(), cmd_str);
+                memset(cmd_buf, 0, cmd_buf_len);
                 cmd_buf_len = 0;
                 suggesting = false;
                 if (echo_input)

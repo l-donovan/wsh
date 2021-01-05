@@ -4,4 +4,18 @@ set WSH_PROMPT "> "
 
 ladd PATH "~/bin:"
 
-exists file "/usr/local/bin/git" && set HAS_BREW_GIT 1
+# Here's one way to do it
+exists file "/usr/local/bin/git" && alias git "/usr/local/bin/git"
+
+# And here's another (clumsier) way
+exists file "/usr/local/bin/nvim" && set HAS_NVIM 1
+equals {HAS_NVIM} 1
+and; alias vim "/usr/local/bin/nvim"
+
+ladd CLASSPATH ".:/usr/local/lib/antlr-4.8-complete.jar:"
+set FZF_DEFAULT_COMMAND "fd --type f"
+set BYOBU_PREFIX "/usr/local"
+alias antlr4 "java -jar /usr/local/lib/antlr-4.8-complete.jar"
+alias grun "java org.antlr.v4.gui.TestRig"
+alias c "clear"
+

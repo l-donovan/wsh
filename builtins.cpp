@@ -61,14 +61,14 @@ namespace builtins {
         if (last_status > 0)
             skip_next = true;
 
-        return CODE_CONTINUE;
+        return last_status;
     }
 
     int bor(char **args) {
         if (last_status == 0)
             skip_next = true;
 
-        return CODE_CONTINUE;
+        return last_status;
     }
 
     int bredirect(char **args) {
@@ -144,5 +144,9 @@ namespace builtins {
             return !dir_exists(std::string(args[2]));
 
         return !any_exists(std::string(args[1]));
+    }
+
+    int bequals(char **args) {
+        return strcmp(args[1], args[2]) != 0;
     }
 }

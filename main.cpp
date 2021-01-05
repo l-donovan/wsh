@@ -496,7 +496,8 @@ int main(int argc, char **argv) {
         { "reload",   builtins::breload },
         { "alias",    builtins::balias },
         { "unalias",  builtins::bunalias },
-        { "exists",  builtins::bexists }
+        { "exists",   builtins::bexists },
+        { "equals",   builtins::bequals }
     };
 
     load_path(); // Load initial path

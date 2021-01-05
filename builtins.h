@@ -15,5 +15,6 @@ namespace builtins {
     int balias(char **args);
     int bunalias(char **args);
     int bexists(char **args);
+    int bequals(char **args);
 }
 

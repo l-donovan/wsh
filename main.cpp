@@ -28,6 +28,9 @@ void suggest(int);
 void replace_variables(std::string&);
 int cmd_execute(char**);
 char** cmd_tokenize(char*);
+bool dir_exists(const std::string&);
+bool file_exists(const std::string&);
+bool any_exists(const std::string&);
 
 char c;
 char cmd_buf[CMD_BUF_SIZE];
@@ -54,22 +57,9 @@ const char *homedir = pw->pw_dir;
 
 std::map<std::string, std::string> executable_map;
 std::map<std::string, std::string> alias_map;
+std::map<std::string, int (*)(char**)> builtins_map;
 std::vector<std::string> history;
 std::string cmd_str;
-
-std::map<std::string, int (*)(char**)> builtins_map = {
-    { "exit",     builtins::bexit },
-    { "cd",       builtins::bcd },
-    { "about",    builtins::babout },
-    { "and",      builtins::band },
-    { "or",       builtins::bor },
-    { "redirect", builtins::bredirect },
-    { "silence",  builtins::bsilence },
-    { "set",      builtins::bset },
-    { "reload",   builtins::breload },
-    { "alias",    builtins::balias },
-    { "unalias",  builtins::bunalias }
-};
 
 // This is a lookahead assertion that makes sure we aren't inside of a string
 std::string not_in_quotes("(?=([^\"\\\\]*(\\\\.|\"([^\"\\\\]*\\\\.)*[^\"\\\\]*\"))*[^\"]*$)");
@@ -86,7 +76,17 @@ void files_in_dir(std::string path) {
     }
 }
 
-inline bool file_exists(const std::string& name) {
+bool dir_exists(const std::string& name) {
+    struct stat buffer;
+    return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFDIR);
+}
+
+bool file_exists(const std::string& name) {
+    struct stat buffer;
+    return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFREG);
+}
+
+bool any_exists(const std::string& name) {
     struct stat buffer;
     return stat(name.c_str(), &buffer) == 0;
 }
@@ -396,8 +396,10 @@ void process_cmd() {
         if (it != builtins_map.end()) {
             auto builtin_fn = it->second;
             int result = builtin_fn(tokens);
-            if (result != CODE_CONTINUE) {
-                exit(result - 1);
+            if (result >= 0) {
+                last_status = result;
+            } else {
+                exit(-result - 1);
             }
         } else {
             cmd_execute(tokens);
@@ -462,8 +464,26 @@ void process_keypress(char ch) {
 }
 
 int main(int argc, char **argv) {
-    load_rc();
-    load_path();
+    builtins_map = {
+        { "exit",     builtins::bexit },
+        { "cd",       builtins::bcd },
+        { "about",    builtins::babout },
+        { "and",      builtins::band },
+        { "or",       builtins::bor },
+        { "redirect", builtins::bredirect },
+        { "silence",  builtins::bsilence },
+        { "set",      builtins::bset },
+        { "ladd",     builtins::bladd },
+        { "radd",     builtins::bradd },
+        { "reload",   builtins::breload },
+        { "alias",    builtins::balias },
+        { "unalias",  builtins::bunalias },
+        { "exists",  builtins::bexists }
+    };
+
+    load_path(); // Load initial path
+    load_rc();   // Make edits to path, possibly
+    load_path(); // Reload new path
     load_prompt();
 
     setenv("SHELL", SHELL_NAME, true);

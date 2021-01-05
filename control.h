@@ -10,9 +10,9 @@
 #define SEQ_OUTPUT_START  "\e]1004;4s"
 #define SEQ_OUTPUT_STOP   "\e]1004;5s"
 
-#define CODE_CONTINUE 0
-#define CODE_EXIT_OK  1
-#define CODE_EXIT_BAD 2
+#define CODE_CONTINUE  0
+#define CODE_EXIT_OK  -1
+#define CODE_EXIT_BAD -2
 
 #define READ_END  0
 #define WRITE_END 1
@@ -24,3 +24,4 @@ extern unsigned int last_status;
 extern bool skip_next;
 extern bool echo_input;
 extern std::map<std::string, std::string> alias_map;
+extern std::map<std::string, int (*)(char**)> builtins_map;

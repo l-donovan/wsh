@@ -1,3 +1,7 @@
 # This is only an example
 
 set WSH_PROMPT "> "
+
+ladd PATH "~/bin:"
+
+exists file "/usr/local/bin/git"; and; set HAS_BREW_GIT 1

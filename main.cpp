@@ -3,6 +3,7 @@
 #include "control.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -16,6 +17,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+void initialize_path();
 void load_path();
 void load_prompt();
 void load_rc();
@@ -104,22 +106,37 @@ void execute_script(std::string filename) {
     echo_input = true;
 }
 
-void load_path() {
-    const char* c_path = std::getenv("PATH");
+// TODO /etc/paths.d processing
+void initialize_path() {
+    std::string path;
 
-    if (c_path != nullptr) {
-        executable_map.clear();
-
-        std::string path(c_path);
-        path += ':';
-
-        size_t pos = 0;
+    if (file_exists("/etc/paths")) {
+        std::ifstream infile("/etc/paths");
         std::string dir;
-        while ((pos = path.find(':')) != std::string::npos) {
-            dir = path.substr(0, pos);
-            files_in_dir(dir);
-            path.erase(0, pos + 1);
-        }
+
+        while (infile >> dir)
+            path += dir + ":";
+
+        if (!path.empty())
+            path.pop_back();
+    }
+
+    setenv("PATH", path.c_str(), true);
+}
+
+void load_path() {
+    executable_map.clear();
+
+    const char* c_path = std::getenv("PATH");
+    std::string path(c_path ?: "");
+    path += ':';
+
+    size_t pos = 0;
+    std::string dir;
+    while ((pos = path.find(':')) != std::string::npos) {
+        dir = path.substr(0, pos);
+        files_in_dir(dir);
+        path.erase(0, pos + 1);
     }
 }
 
@@ -134,20 +151,22 @@ void load_prompt() {
 }
 
 void load_rc() {
-    std::string home_path(homedir);
-    home_path += '/';
-    home_path += RC_FILENAME;
-
     std::string local_path(".");
     local_path += '/';
     local_path += RC_FILENAME;
 
-    if (file_exists(home_path)) {
-        execute_script(home_path);
-    }
-
     if (file_exists(local_path)) {
         execute_script(local_path);
+        return;
+    }
+
+    std::string home_path(homedir);
+    home_path += '/';
+    home_path += RC_FILENAME;
+
+    if (file_exists(home_path)) {
+        execute_script(home_path);
+        return;
     }
 }
 
@@ -500,9 +519,11 @@ int main(int argc, char **argv) {
         { "equals",   builtins::bequals }
     };
 
-    load_path(); // Load initial path
-    load_rc();   // Make edits to path, possibly
-    load_path(); // Reload new path
+    initialize_path(); // This actually initializes the PATH variable using /etc/paths
+    load_path();       // This reads the PATH variable to determine full paths to commands
+    load_rc();         // Here, edits could potentially be made to PATH...
+    load_path();       // hence we reload the PATH
+
     load_prompt();
 
     setenv("SHELL", SHELL_NAME, true);

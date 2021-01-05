@@ -138,12 +138,12 @@ namespace builtins {
 
     int bexists(char **args) {
         if (strcmp(args[1], "file") == 0)
-            return !file_exists(std::string(args[2]));
+            return !file_exists(args[2]);
 
         if (strcmp(args[1], "dir") == 0)
-            return !dir_exists(std::string(args[2]));
+            return !dir_exists(args[2]);
 
-        return !any_exists(std::string(args[1]));
+        return !any_exists(args[1]);
     }
 
     int bequals(char **args) {

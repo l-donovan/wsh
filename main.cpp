@@ -46,7 +46,11 @@ bool echo_input  = true;
 bool esc_seq     = false;
 bool skip_next   = false;
 bool pipe_input  = false;
+bool or_output   = false;
 bool pipe_output = false;
+bool and_output  = false;
+bool bg_output   = false;
+
 bool suggesting  = false;
 
 int pipefd_input[2];
@@ -366,9 +370,9 @@ void process_cmd() {
     if (cmd_buf[0] == '#')
         return;
 
-    // Commands are delimited by semicolons or pipes
+    // Commands are delimited by semicolons, double pipes, one pipe, double ampersands, or one ampersand
     std::smatch match;
-    std::regex cmd_separator("[;\\|]" + not_in_quotes);
+    std::regex cmd_separator(";|\\|\\||\\||&&|&" + not_in_quotes);
     std::string input(cmd_buf);
     input += ';';
     std::string cmd;
@@ -383,7 +387,11 @@ void process_cmd() {
             continue;
         }
 
-        pipe_output = match.str().at(0) == '|';
+        or_output = match.str() == "||";
+        pipe_output = match.str() == "|";
+        and_output = match.str() == "&&";
+        bg_output = match.str() == "&"; // TODO This will probably take a bit of restructuring
+
         cmd = match.prefix();
         trim(cmd);
         replace_variables(cmd);
@@ -403,6 +411,16 @@ void process_cmd() {
             }
         } else {
             cmd_execute(tokens);
+        }
+
+        if (and_output) {
+            skip_next = last_status != 0;
+            and_output = false;
+        }
+
+        if (or_output) {
+            skip_next = last_status == 0;
+            or_output = false;
         }
     }
 }

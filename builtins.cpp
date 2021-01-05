@@ -21,11 +21,10 @@ namespace builtins {
     int bexit(char **args) {
         std::cout << "Goodbye!" << std::endl;
 
-        if (args[1] == nullptr) {
+        if (args[1] == nullptr)
             return CODE_EXIT_OK;
-        } else {
+        else
             return -(atoi(args[1]) + 1);
-        }
     }
 
     int bcd(char **args) {
@@ -59,17 +58,15 @@ namespace builtins {
     }
 
     int band(char **args) {
-        if (last_status > 0) {
+        if (last_status > 0)
             skip_next = true;
-        }
 
         return CODE_CONTINUE;
     }
 
     int bor(char **args) {
-        if (last_status == 0) {
+        if (last_status == 0)
             skip_next = true;
-        }
 
         return CODE_CONTINUE;
     }

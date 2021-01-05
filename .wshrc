@@ -4,4 +4,4 @@ set WSH_PROMPT "> "
 
 ladd PATH "~/bin:"
 
-exists file "/usr/local/bin/git"; and; set HAS_BREW_GIT 1
+exists file "/usr/local/bin/git" && set HAS_BREW_GIT 1

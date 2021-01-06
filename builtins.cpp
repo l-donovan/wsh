@@ -1,18 +1,23 @@
 #include "builtins.h"
 #include "config.h"
 #include "control.h"
+#include "global.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
+#include <string>
 #include <unistd.h>
 
+using std::string;
 
-char lwd[PATH_SIZE];
-char twd[PATH_SIZE];
+string twd;
+string lwd;
 
 // Defined in main.cpp
 void load_path();
+void load_prompt();
 bool dir_exists(const std::string&);
 bool file_exists(const std::string&);
 bool any_exists(const std::string&);
@@ -28,16 +33,16 @@ namespace builtins {
     }
 
     int bcd(char **args) {
-        getcwd(twd, PATH_SIZE);
+        twd = std::filesystem::current_path();
 
         if (strcmp(args[1], "-") == 0) {
+            std::filesystem::current_path(lwd);
             std::cout << lwd << std::endl;
-            chdir(lwd);
         } else {
-            chdir(args[1]);
+            std::filesystem::current_path(args[1]);
         }
 
-        strcpy(lwd, twd);
+        lwd = twd;
 
         return CODE_CONTINUE;
     }
@@ -115,6 +120,7 @@ namespace builtins {
 
     int breload(char **args) {
         load_path();
+        load_prompt();
 
         return CODE_CONTINUE;
     }

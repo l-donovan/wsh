@@ -1,14 +1,18 @@
 #include "builtins.h"
 #include "config.h"
 #include "control.h"
+#include "global.h"
 #include "utils.h"
 
 #include <algorithm>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits.h>
 #include <map>
 #include <pwd.h>
 #include <regex>
@@ -17,6 +21,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+using std::string;
+
+string escape_string(string);
+string parse_path_file(string);
 void initialize_path();
 void load_path();
 void load_prompt();
@@ -24,36 +32,30 @@ void load_rc();
 void process_keypress(char);
 void process_cmd();
 bool process_esc_seq();
-void files_in_dir(std::string);
-void execute_script(std::string);
+void files_in_dir(string);
+void execute_script(string);
 void suggest(int);
-void replace_variables(std::string&);
+void replace_variables(string&);
 int cmd_execute(char**);
 char** cmd_tokenize(char*);
-bool dir_exists(const std::string&);
-bool file_exists(const std::string&);
-bool any_exists(const std::string&);
+bool dir_exists(const string&);
+bool file_exists(const string&);
+bool any_exists(const string&);
 
 char c;
-char cmd_buf[CMD_BUF_SIZE];
-char esc_buf[ESC_BUF_SIZE];
-char prompt[PROMPT_SIZE];
-
-unsigned int cmd_buf_len = 0;
-unsigned int esc_buf_len = 0;
 unsigned int last_status = 0;
 unsigned int history_idx = 0;
-
+int input_idx = INSERT_END;
 bool echo_input  = true;
-bool esc_seq     = false;
+bool in_esc_seq  = false;
 bool skip_next   = false;
 bool pipe_input  = false;
-bool or_output   = false;
 bool pipe_output = false;
+bool or_output   = false;
 bool and_output  = false;
 bool bg_output   = false;
-
 bool suggesting  = false;
+bool control_c   = false;
 
 int pipefd_input[2];
 int pipefd_output[2];
@@ -61,61 +63,75 @@ int pipefd_output[2];
 struct passwd *pw = getpwuid(getuid());
 const char *homedir = pw->pw_dir;
 
-std::map<std::string, std::string> executable_map;
-std::map<std::string, std::string> alias_map;
-std::map<std::string, int (*)(char**)> builtins_map;
-std::vector<std::string> history;
-std::string cmd_str;
+std::map<string, string> executable_map;
+std::map<string, string> alias_map;
+std::map<string, int (*)(char**)> builtins_map;
+std::vector<string> history;
+string esc_seq;
+string cmd_str;
+string prompt;
 
-// This is a lookahead assertion that makes sure we aren't inside of a string
-std::string not_in_quotes("(?=([^\"\\\\]*(\\\\.|\"([^\"\\\\]*\\\\.)*[^\"\\\\]*\"))*[^\"]*$)");
+// This horrible lookahead assertion makes sure we aren't inside of a string
+// Because std::regex supports neither named backreferences nor relative numbered backreferences,
+// the reference \4 is hardcoded and expects exactly one capturing group before this snippet
+string not_in_quotes("(?=([^\"'\\\\]*(\\\\.|([\"'])([^\"'\\\\]*\\\\.)*[^\"'\\\\]*\\4))*[^\"']*$)");
 
-void files_in_dir(std::string path) {
+void files_in_dir(string path) {
     struct stat info;
 
-    if (stat(path.c_str(), &info) == 0 && (info.st_mode & S_IFDIR)) {
-        for (const auto & entry : std::filesystem::directory_iterator(path)) {
+    if (dir_exists(path.c_str())) {
+        for (const auto & entry : std::filesystem::directory_iterator(path))
             executable_map.emplace(entry.path().filename(), entry.path());
-        }
     } else {
         std::cerr << path << " is not a valid directory" << std::endl;
     }
 }
 
-bool dir_exists(const std::string& name) {
+bool dir_exists(const string& name) {
     struct stat buffer;
     return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFDIR);
 }
 
-bool file_exists(const std::string& name) {
+bool file_exists(const string& name) {
     struct stat buffer;
     return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFREG);
 }
 
-bool any_exists(const std::string& name) {
+bool any_exists(const string& name) {
     struct stat buffer;
     return stat(name.c_str(), &buffer) == 0;
 }
 
-void execute_script(std::string filename) {
+void execute_script(string filename) {
     echo_input = false;
     std::fstream fin(filename, std::fstream::in);
-    while (fin >> std::noskipws >> c) {
+
+    while (fin >> std::noskipws >> c)
         process_keypress(c);
-    }
+
     echo_input = true;
 }
 
-// TODO /etc/paths.d processing
-void initialize_path() {
-    std::string path;
+string parse_path_file(string filepath) {
+    string path;
 
-    if (file_exists("/etc/paths")) {
-        std::ifstream infile("/etc/paths");
-        std::string dir;
+    if (file_exists(filepath)) {
+        std::ifstream infile(filepath);
+        string dir;
 
         while (infile >> dir)
             path += dir + ":";
+    }
+
+    return path;
+}
+
+void initialize_path() {
+    string path = parse_path_file("/etc/paths");
+
+    if (dir_exists("/etc/paths.d")) {
+        for (const auto & entry : std::filesystem::directory_iterator("/etc/paths.d"))
+            path += parse_path_file(entry.path());
 
         if (!path.empty())
             path.pop_back();
@@ -128,12 +144,12 @@ void load_path() {
     executable_map.clear();
 
     const char* c_path = std::getenv("PATH");
-    std::string path(c_path ?: "");
+    string path(c_path ?: "");
     path += ':';
 
     size_t pos = 0;
-    std::string dir;
-    while ((pos = path.find(':')) != std::string::npos) {
+    string dir;
+    while ((pos = path.find(':')) != string::npos) {
         dir = path.substr(0, pos);
         files_in_dir(dir);
         path.erase(0, pos + 1);
@@ -141,17 +157,13 @@ void load_path() {
 }
 
 void load_prompt() {
-    const char* raw_prompt = std::getenv("WSH_PROMPT");
-    if (raw_prompt == nullptr) {
-        strcpy(prompt, DEFAULT_PROMPT);
-    } else {
-        // Here's where we'd actually handle prompt replacement
-        strcpy(prompt, raw_prompt);
-    }
+    const char* raw_prompt_c = std::getenv("WSH_PROMPT");
+    string raw_prompt(raw_prompt_c ?: DEFAULT_PROMPT);
+    prompt = escape_string(raw_prompt);
 }
 
 void load_rc() {
-    std::string local_path(".");
+    string local_path(".");
     local_path += '/';
     local_path += RC_FILENAME;
 
@@ -160,7 +172,7 @@ void load_rc() {
         return;
     }
 
-    std::string home_path(homedir);
+    string home_path(homedir);
     home_path += '/';
     home_path += RC_FILENAME;
 
@@ -237,13 +249,87 @@ int cmd_execute(char **args) {
     return 1;
 }
 
+string escape_string(string str) {
+    string output = str;
+
+    std::regex escapes("\\\\([\\\\\"'\\$adehHjlnrstT@uvVwW])");
+    string::const_iterator search_start(str.cbegin());
+    std::smatch match;
+    int offset = 0;
+
+    while (regex_search(search_start, str.cend(), match, escapes)) {
+        std::string replacement;
+
+        if (match[1] == "\\" || match[1] == "\"" || match[1] == "\'") {
+            // Replacement of literal backslashes and quotes
+            replacement = match[1];
+        } else if (match[1] == "n") {
+            replacement = "\n";
+        } else if (match[1] == "r") {
+            replacement = "\r";
+        } else if (match[1] == "e") {
+            replacement = "\e";
+        } else if (match[1] == "a") {
+            replacement = "\x07";
+        } else if (match[1] == "h" || match[1] == "H") {
+            char *name = (char*) malloc(_POSIX_HOST_NAME_MAX * sizeof(char));
+            gethostname(name, _POSIX_HOST_NAME_MAX);
+            replacement = string(name);
+        } else if (match[1] == "u") {
+            replacement = getlogin() ?: "";
+        } else if (match[1] == "s" ) {
+            replacement = SHELL_NAME;
+        } else if (match[1] == "w") {
+            replacement = std::filesystem::current_path();
+        } else if (match[1] == "W") {
+            replacement = std::filesystem::current_path().stem();
+        } else if (match[1] == "$") {
+            replacement = geteuid() == 0 ? "#" : "$";
+        } else if (match[1] == "t") {
+            std::time_t t = std::time(0);
+            std::ostringstream os;
+            os << std::put_time(std::localtime(&t), "%H:%M:%S");
+            replacement = os.str();
+        } else if (match[1] == "T") {
+            std::time_t t = std::time(0);
+            std::ostringstream os;
+            os << std::put_time(std::localtime(&t), "%I:%M:%S");
+            replacement = os.str();
+        } else if (match[1] == "@") {
+            std::time_t t = std::time(0);
+            std::ostringstream os;
+            os << std::put_time(std::localtime(&t), "%I:%M:%S %p");
+            replacement = os.str();
+        } else if (match[1] == "d") {
+            std::time_t t = std::time(0);
+            std::ostringstream os;
+            os << std::put_time(std::localtime(&t), "%a %b %d");
+            replacement = os.str();
+        } else if (match[1] == "v") {
+            std::ostringstream os;
+            os << VERSION_MAJOR << "." << VERSION_MINOR;
+            replacement = os.str();
+        } else if (match[1] == "V") {
+            std::ostringstream os;
+            os << VERSION_MAJOR << "." << VERSION_MINOR << "." << VERSION_PATCH;
+            replacement = os.str();
+        }
+
+        output.replace(match.position() + offset, match.length(), replacement);
+        offset += match.position() + replacement.length();
+        search_start = match.suffix().first;
+    }
+
+    return output;
+}
+
 char** cmd_tokenize(char *cmd) {
     std::smatch match;
-    std::regex whitespace("\\s+" + not_in_quotes);
-    std::string input(cmd);
-    std::string arg;
+    std::regex whitespace("(\\s+)" + not_in_quotes);
+    string input(cmd);
+    string arg;
     input += ' ';
-    std::string::const_iterator search_start(input.cbegin());
+    string::const_iterator search_start(input.cbegin());
     unsigned int argc = 0;
 
     std::ptrdiff_t const match_count(std::distance(
@@ -260,8 +346,12 @@ char** cmd_tokenize(char *cmd) {
     while (regex_search(search_start, input.cend(), match, whitespace)) {
         arg = match.prefix();
 
-        // Trim the quotes off of a string argument
-        if (arg.at(0) == '"' && arg.at(arg.length() - 1) == '"') {
+        if (arg[0] == '"' && arg[arg.length() - 1] == '"') {
+            // Trim the double quotes off of a string argument and evaluate substitutions
+            arg = arg.substr(1, arg.length() - 2);
+            arg = escape_string(arg);
+        } else if (arg[0] == '\'' && arg[arg.length() - 1] == '\'') {
+            // Trim the single quotes off of a string argument
             arg = arg.substr(1, arg.length() - 2);
         }
 
@@ -318,49 +408,59 @@ void suggest(int direction) {
             --history_idx;
     }
 
-    std::string suggestion = history.at(history_idx);
-    strcpy(cmd_buf, suggestion.c_str());
+    string suggestion = history.at(history_idx);
 
     // Move back to right after the prompt, then clear the line and print our suggestion
-    std::cout << "\e[" << (cmd_buf_len + suggesting - 1) << "D\e[K";
-    std::cout << cmd_buf;
+    std::cout << "\e[" << (cmd_str.length() + suggesting - 1) << "D\e[K";
+    cmd_str = suggestion;
+    std::cout << cmd_str;
 
-    cmd_buf_len = suggestion.length();
     suggesting = true;
 }
 
 bool process_esc_seq() {
-    std::cmatch cm;
+    std::smatch match;
 
-    if (std::regex_match(esc_buf, cm, std::regex("\\[([ABCD])"))) {
-        if (cm[1] == "A") { // UP
+    if (std::regex_match(esc_seq, match, std::regex("\\[([ABCD])"))) {
+        if (match[1] == "A") { // UP
             suggest(DIRECTION_UP);
-        } else if (cm[1] == "B") { // DOWN
+        } else if (match[1] == "B") { // DOWN
             suggest(DIRECTION_DOWN);
-        } else if (cm[1] == "C") { // RIGHT
-            std::cout << "RIGHT" << std::endl;
-        } else if (cm[1] == "D") { // LEFT
-            std::cout << "LEFT" << std::endl;
+        } else if (match[1] == "C") { // RIGHT
+            if (input_idx != INSERT_END) {
+                if (++input_idx > cmd_str.length() - 1)
+                    input_idx = INSERT_END;
+
+                if (echo_input)
+                    std::cout << "\e[C";
+            }
+        } else if (match[1] == "D") { // LEFT
+            if (input_idx != 0)
+                std::cout << "\e[D";
+
+            if (input_idx == INSERT_END)
+                input_idx = cmd_str.length() - 1;
+            else if (input_idx > 0)
+                --input_idx;
         }
 
         return true;
     }
 
-    // Here's where we would actually do something with the escape sequence
     return false;
 }
 
-void replace_variables(std::string &input) {
-    std::string output(input);
+void replace_variables(string &input) {
+    string output(input);
     int offset = 0;
 
     std::smatch match;
     std::regex variable("\\{(\\w+)\\}");
-    std::string::const_iterator search_start(input.cbegin());
+    string::const_iterator search_start(input.cbegin());
 
     while (regex_search(search_start, input.cend(), match, variable)) {
         const char* c_var = std::getenv(match[1].str().c_str());
-        std::string var(c_var ?: "");
+        string var(c_var ?: "");
         output.replace(match.position() + offset, match.length(), var);
         offset += match.position() + var.length();
         search_start = match.suffix().first;
@@ -368,7 +468,7 @@ void replace_variables(std::string &input) {
 
     std::regex tilde("~");
     search_start = input.cbegin();
-    std::string home(homedir);
+    string home(homedir);
     offset = 0;
 
     while (regex_search(search_start, input.cend(), match, tilde)) {
@@ -382,21 +482,20 @@ void replace_variables(std::string &input) {
 
 void process_cmd() {
     // No point in running an empty command
-    if (!cmd_buf_len)
+    if (cmd_str.empty())
         return;
 
     // Comments are easy enough to handle
-    if (cmd_buf[0] == '#')
+    if (cmd_str[0] == '#')
         return;
 
     // Commands are delimited by semicolons, double pipes, one pipe, double ampersands, or one ampersand
     std::smatch match;
-    std::regex cmd_separator(";|\\|\\||\\||&&|&" + not_in_quotes);
-    std::string input(cmd_buf);
+    std::regex cmd_separator("(;|\\|\\||\\||&&|&)" + not_in_quotes);
+    string input(cmd_str);
     input += ';';
-    std::string cmd;
-    bool is_pipe;
-    std::string::const_iterator search_start(input.cbegin());
+    string cmd;
+    string::const_iterator search_start(input.cbegin());
 
     while (regex_search(search_start, input.cend(), match, cmd_separator)) {
         search_start = match.suffix().first;
@@ -445,33 +544,36 @@ void process_cmd() {
 }
 
 void process_keypress(char ch) {
-    if (esc_seq) {
-        if (esc_buf_len < ESC_BUF_SIZE - 1) {
-            // Add our newest character
-            esc_buf[esc_buf_len++] = ch;
+    if (in_esc_seq) {
+        // Add our newest character
+        esc_seq += ch;
 
-            // If we aren't done yet, move along
-            if (!process_esc_seq())
-                return;
-        } else {
-            // Escape sequence is too large
-            perror("Escape buffer reached maximum size");
+        // If the sequence is complete...
+        if (process_esc_seq()) {
+            // clear the buffer
+            esc_seq.clear();
+            in_esc_seq = false;
         }
-
-        // Clear the buffer, reset the pointer
-        memset(esc_buf, 0, ESC_BUF_SIZE);
-        esc_buf_len = 0;
-        esc_seq = false;
     } else {
         switch (ch) {
             case 0x1b: // ESCAPE
-                esc_seq = true;
+                in_esc_seq = true;
                 break;
             case 0x7f: // BACKSPACE (DELETE)
-                if (cmd_buf_len) {
-                    if (echo_input)
-                        std::cout << "\x08 \x08";
-                    cmd_buf[--cmd_buf_len] = 0;
+                if (!cmd_str.empty()) {
+                    if (input_idx == INSERT_END) {
+                        cmd_str.pop_back();
+                        if (echo_input)
+                            std::cout << "\x08 \x08";
+                    } else if (input_idx != 0) {
+                        --input_idx;
+                        cmd_str.erase(input_idx, 1);
+                        if (echo_input) {
+                            std::cout << "\x08\e[K"; // Backspace and clear the rest of the line
+                            std::cout << cmd_str.substr(input_idx, string::npos); // Print the second part of the command
+                            std::cout << "\e[" << (cmd_str.length() - input_idx) << "D"; // Move the cursor back
+                        }
+                    }
                 }
                 break;
             case 0x0a: // NEWLINE
@@ -479,28 +581,54 @@ void process_keypress(char ch) {
                     std::cout << std::endl;
                 process_cmd();
                 history_idx = 0;
-                cmd_str = cmd_buf;
                 // If this command is running silently, we don't want it in our history.
                 // We also don't want it in our history if this command is the same as the
                 // last non-silent command we executed.
                 if (echo_input && (history.empty() || history.front() != cmd_str))
                     history.insert(history.begin(), cmd_str);
-                memset(cmd_buf, 0, cmd_buf_len);
-                cmd_buf_len = 0;
+                cmd_str.clear();
                 suggesting = false;
+                input_idx = INSERT_END;
+                load_prompt();
                 if (echo_input)
                     std::cout << prompt;
                 break;
+            case EOF:
+                break;
             default:
-                if (echo_input)
-                    std::cout << ch;
-                cmd_buf[cmd_buf_len++] = ch;
+                if (input_idx == INSERT_END) {
+                    cmd_str += ch;
+                    if (echo_input)
+                        std::cout << ch;
+                } else {
+                    cmd_str.insert(input_idx, 1, ch);
+                    if (echo_input) {
+                        std::cout << cmd_str.substr(input_idx, string::npos);
+                        std::cout << "\e[" << (cmd_str.length() - 1 - input_idx) << "D";
+                    }
+                    ++input_idx;
+                }
+
                 break;
         }
     }
 }
 
+void sig_int_callback(int s) {
+    cmd_str.clear();
+    if (echo_input)
+        std::cout << std::endl << prompt;
+    control_c = true;
+}
+
 int main(int argc, char **argv) {
+    // Register our SIGINT handler
+    struct sigaction sig_int_handler;
+    sig_int_handler.sa_handler = sig_int_callback;
+    sigemptyset(&sig_int_handler.sa_mask);
+    sig_int_handler.sa_flags = 0;
+    sigaction(SIGINT, &sig_int_handler, NULL);
+
     builtins_map = {
         { "exit",     builtins::bexit },
         { "cd",       builtins::bcd },
@@ -534,16 +662,20 @@ int main(int argc, char **argv) {
 
     // Loading from script
     if (argc > 1) {
-        execute_script(std::string(argv[1]));
+        execute_script(string(argv[1]));
         return 0;
     }
 
     if (echo_input)
         std::cout << prompt;
 
-    while ((c = getch()) != EOF) {
+    while ((c = getch()) != EOF || control_c) {
         process_keypress(c);
+        control_c = false;
     }
+
+    std::cout << (int) c << std::endl;
 
     return 0;
 }
+

@@ -1,8 +1,5 @@
 #pragma once
 
-#include <map>
-#include <string>
-
 #define SEQ_PROMPT_START  "\e]1004;0s"
 #define SEQ_PROMPT_STOP   "\e]1004;1s"
 #define SEQ_COMMAND_START "\e]1004;2s"
@@ -20,8 +17,5 @@
 #define DIRECTION_UP   0
 #define DIRECTION_DOWN 1
 
-extern unsigned int last_status;
-extern bool skip_next;
-extern bool echo_input;
-extern std::map<std::string, std::string> alias_map;
-extern std::map<std::string, int (*)(char**)> builtins_map;
+#define INSERT_END   -1
+

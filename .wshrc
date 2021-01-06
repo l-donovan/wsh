@@ -1,6 +1,6 @@
 # This is only an example
 
-set WSH_PROMPT "> "
+set WSH_PROMPT '[\e[32m\t\e[m][\e[36m\u\e[m:\e[33m\W\e[m]\$ '
 
 ladd PATH "~/bin:"
 

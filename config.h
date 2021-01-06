@@ -1,9 +1,8 @@
 #pragma once
 
-#define CMD_BUF_SIZE 1024
-#define ESC_BUF_SIZE  256
-#define PROMPT_SIZE   512
-#define PATH_SIZE    4096
+#define VERSION_MAJOR 0
+#define VERSION_MINOR 0
+#define VERSION_PATCH 1
 
 #define SHELL_NAME     "wsh"
 #define DEFAULT_PROMPT "$ "

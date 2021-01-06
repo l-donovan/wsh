@@ -3,7 +3,7 @@ SRC = builtins.cpp utils.cpp main.cpp
 BIN = wsh
 
 all:
-	$(CC) --std=c++17 $(SRC) -o $(BIN)
+	$(CC) --std=c++20 $(SRC) -o $(BIN)
 
 install:
 	cp $(BIN) ~/bin/$(BIN)

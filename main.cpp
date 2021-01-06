@@ -30,14 +30,14 @@ void load_path();
 void load_prompt();
 void load_rc();
 void process_keypress(char);
-void process_cmd();
 bool process_esc_seq();
 void files_in_dir(string);
 void execute_script(string);
 void suggest(int);
 void replace_variables(string&);
-int cmd_execute(char**);
-char** cmd_tokenize(char*);
+void cmd_enter(string, bool);
+int cmd_execute(char**, bool);
+char** cmd_tokenize(string);
 bool dir_exists(const string&);
 bool file_exists(const string&);
 bool any_exists(const string&);
@@ -56,9 +56,11 @@ bool and_output  = false;
 bool bg_output   = false;
 bool suggesting  = false;
 bool control_c   = false;
-
+bool subcommand  = false;
 int pipefd_input[2];
 int pipefd_output[2];
+int pipefd_subc[2];
+char subc_buf[1024];
 
 struct passwd *pw = getpwuid(getuid());
 const char *homedir = pw->pw_dir;
@@ -70,6 +72,7 @@ std::vector<string> history;
 string esc_seq;
 string cmd_str;
 string prompt;
+string subc_out;
 
 // This horrible lookahead assertion makes sure we aren't inside of a string
 // Because std::regex supports neither named backreferences nor relative numbered backreferences,
@@ -182,7 +185,7 @@ void load_rc() {
     }
 }
 
-int cmd_execute(char **args) {
+int cmd_execute(char **args, bool is_subcommand) {
     pid_t pid, wpid;
     int status;
 
@@ -216,6 +219,13 @@ int cmd_execute(char **args) {
             dup2(pipefd_output[WRITE_END], STDERR_FILENO);
         }
 
+        if (is_subcommand) {
+            close(pipefd_subc[READ_END]);
+
+            dup2(pipefd_subc[WRITE_END], STDOUT_FILENO);
+            dup2(pipefd_subc[WRITE_END], STDERR_FILENO);
+        }
+
         if (execv(args[0], args) == -1) {
             // We would update some sort of status here or something
             perror(args[0]);
@@ -240,6 +250,20 @@ int cmd_execute(char **args) {
 
         if (pipe_output) {
             close(pipefd_output[WRITE_END]);
+        }
+
+        if (is_subcommand) {
+            close(pipefd_subc[WRITE_END]);
+
+            subc_out.clear();
+
+            while (int nread = read(pipefd_subc[READ_END], subc_buf, 1023)) {
+                subc_buf[nread] = '\0';
+                subc_out += subc_buf;
+            }
+
+            close(pipefd_subc[READ_END]);
+            pipe(pipefd_subc);
         }
 
         pipe_input = pipe_output;
@@ -323,10 +347,9 @@ string escape_string(string str) {
     return output;
 }
 
-char** cmd_tokenize(char *cmd) {
+char** cmd_tokenize(string input) {
     std::smatch match;
     std::regex whitespace("(\\s+)" + not_in_quotes);
-    string input(cmd);
     string arg;
     input += ' ';
     string::const_iterator search_start(input.cbegin());
@@ -466,6 +489,17 @@ void replace_variables(string &input) {
         search_start = match.suffix().first;
     }
 
+    std::regex expr("\\{\\[(.+?)\\]\\}");
+    search_start = input.cbegin();
+    offset = 0;
+
+    while (regex_search(search_start, input.cend(), match, expr)) {
+        cmd_enter(match[1], true);
+        output.replace(match.position() + offset, match.length(), subc_out);
+        offset += match.position() + subc_out.length();
+        search_start = match.suffix().first;
+    }
+
     std::regex tilde("~");
     search_start = input.cbegin();
     string home(homedir);
@@ -480,19 +514,24 @@ void replace_variables(string &input) {
     input = output;
 }
 
-void process_cmd() {
+void cmd_enter(string input, bool is_subcommand) {
     // No point in running an empty command
-    if (cmd_str.empty())
+    if (input.empty())
         return;
 
     // Comments are easy enough to handle
-    if (cmd_str[0] == '#')
+    if (input[0] == '#')
         return;
+
+    // We don't want the subcommand to affect the parent command
+    bool _or_output = or_output;
+    bool _pipe_output = pipe_output;
+    bool _and_output = and_output;
+    bool _bg_output = bg_output;
 
     // Commands are delimited by semicolons, double pipes, one pipe, double ampersands, or one ampersand
     std::smatch match;
     std::regex cmd_separator("(;|\\|\\||\\||&&|&)" + not_in_quotes);
-    string input(cmd_str);
     input += ';';
     string cmd;
     string::const_iterator search_start(input.cbegin());
@@ -515,7 +554,7 @@ void process_cmd() {
         replace_variables(cmd);
 
         // Lookup our command
-        char **tokens = cmd_tokenize(cmd.data());
+        char **tokens = cmd_tokenize(cmd);
 
         // Find if this is a builtin command
         auto it = builtins_map.find(tokens[0]);
@@ -528,7 +567,7 @@ void process_cmd() {
                 exit(-result - 1);
             }
         } else {
-            cmd_execute(tokens);
+            cmd_execute(tokens, is_subcommand);
         }
 
         if (and_output) {
@@ -540,6 +579,13 @@ void process_cmd() {
             skip_next = last_status == 0;
             or_output = false;
         }
+    }
+
+    if (is_subcommand) {
+        or_output = _or_output;
+        pipe_output = _pipe_output;
+        and_output = _and_output;
+        bg_output = _bg_output;
     }
 }
 
@@ -579,7 +625,7 @@ void process_keypress(char ch) {
             case 0x0a: // NEWLINE
                 if (echo_input)
                     std::cout << std::endl;
-                process_cmd();
+                cmd_enter(cmd_str, false);
                 history_idx = 0;
                 // If this command is running silently, we don't want it in our history.
                 // We also don't want it in our history if this command is the same as the
@@ -629,6 +675,11 @@ int main(int argc, char **argv) {
     sig_int_handler.sa_flags = 0;
     sigaction(SIGINT, &sig_int_handler, NULL);
 
+    // Setup our pipes
+    pipe(pipefd_input);
+    pipe(pipefd_output);
+    pipe(pipefd_subc);
+
     builtins_map = {
         { "exit",     builtins::bexit },
         { "cd",       builtins::bcd },
@@ -655,10 +706,6 @@ int main(int argc, char **argv) {
     load_prompt();
 
     setenv("SHELL", SHELL_NAME, true);
-
-    // Setup our pipes
-    pipe(pipefd_input);
-    pipe(pipefd_output);
 
     // Loading from script
     if (argc > 1) {

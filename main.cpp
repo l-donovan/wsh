@@ -17,8 +17,8 @@
 #include <pwd.h>
 #include <regex>
 #include <string>
-#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 using std::string;
@@ -36,11 +36,8 @@ void execute_script(string);
 void suggest(int);
 void replace_variables(string&);
 void cmd_enter(string, bool);
-int cmd_execute(char**, bool);
-char** cmd_tokenize(string);
-bool dir_exists(const string&);
-bool file_exists(const string&);
-bool any_exists(const string&);
+int cmd_execute(char**, bool, bool);
+std::vector<string> cmd_tokenize(string);
 
 char c;
 unsigned int last_status = 0;
@@ -53,7 +50,7 @@ bool pipe_input  = false;
 bool pipe_output = false;
 bool or_output   = false;
 bool and_output  = false;
-bool bg_output   = false;
+bool bg_command   = false;
 bool suggesting  = false;
 bool control_c   = false;
 bool subcommand  = false;
@@ -88,21 +85,6 @@ void files_in_dir(string path) {
     } else {
         std::cerr << path << " is not a valid directory" << std::endl;
     }
-}
-
-bool dir_exists(const string& name) {
-    struct stat buffer;
-    return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFDIR);
-}
-
-bool file_exists(const string& name) {
-    struct stat buffer;
-    return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFREG);
-}
-
-bool any_exists(const string& name) {
-    struct stat buffer;
-    return stat(name.c_str(), &buffer) == 0;
 }
 
 void execute_script(string filename) {
@@ -185,7 +167,7 @@ void load_rc() {
     }
 }
 
-int cmd_execute(char **args, bool is_subcommand) {
+int cmd_execute(char **args, bool is_subcommand, bool is_background) {
     pid_t pid, wpid;
     int status;
 
@@ -237,37 +219,39 @@ int cmd_execute(char **args, bool is_subcommand) {
         // Parent process
         // We want to run waitpid before checking the conditions, hence the do {} while
 
-        do {
-            wpid = waitpid(pid, &status, WUNTRACED);
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+        if (!is_background) {
+            do {
+                wpid = waitpid(pid, &status, WUNTRACED);
+            } while (!WIFEXITED(status) && !WIFSIGNALED(status));
 
-        last_status = WEXITSTATUS(status);
+            last_status = WEXITSTATUS(status);
 
-        if (pipe_input) {
-            close(pipefd_input[READ_END]);
-            pipe(pipefd_input);
-        }
-
-        if (pipe_output) {
-            close(pipefd_output[WRITE_END]);
-        }
-
-        if (is_subcommand) {
-            close(pipefd_subc[WRITE_END]);
-
-            subc_out.clear();
-
-            while (int nread = read(pipefd_subc[READ_END], subc_buf, 1023)) {
-                subc_buf[nread] = '\0';
-                subc_out += subc_buf;
+            if (pipe_input) {
+                close(pipefd_input[READ_END]);
+                pipe(pipefd_input);
             }
 
-            close(pipefd_subc[READ_END]);
-            pipe(pipefd_subc);
-        }
+            if (pipe_output) {
+                close(pipefd_output[WRITE_END]);
+            }
 
-        pipe_input = pipe_output;
-        pipe_output = false;
+            if (is_subcommand) {
+                close(pipefd_subc[WRITE_END]);
+
+                subc_out.clear();
+
+                while (int nread = read(pipefd_subc[READ_END], subc_buf, 1023)) {
+                    subc_buf[nread] = '\0';
+                    subc_out += subc_buf;
+                }
+
+                close(pipefd_subc[READ_END]);
+                pipe(pipefd_subc);
+            }
+
+            pipe_input = pipe_output;
+            pipe_output = false;
+        }
     }
 
     return 1;
@@ -347,27 +331,67 @@ string escape_string(string str) {
     return output;
 }
 
-char** cmd_tokenize(string input) {
-    std::smatch match;
-    std::regex whitespace("(\\s+)" + not_in_quotes);
-    string arg;
-    input += ' ';
-    string::const_iterator search_start(input.cbegin());
-    unsigned int argc = 0;
+int whitespace_separator(string input) {
+    bool inside_squotes = false;
+    bool inside_dquotes = false;
+    bool whitespace_found = false;
+    bool escaping = false;
+    int whitespace_idx = NO_MORE_WHITESPACE;
 
-    std::ptrdiff_t const match_count(std::distance(
-        std::sregex_iterator(input.begin(), input.end(), whitespace),
-        std::sregex_iterator()));
-
-    char** tokens = (char**) malloc((match_count + 1) * sizeof(char*));
-
-    if (!tokens) {
-        perror("Error when allocating arguments buffer");
-        exit(EXIT_FAILURE);
+    for (int i = 0; i < input.size(); ++i) {
+        if (whitespace_found) {
+            if (input[i] == ' ')
+                whitespace_idx = i;
+            else
+                return whitespace_idx;
+        } else if (input[i] == ' ' && !inside_squotes && !inside_dquotes) {
+            whitespace_found = true;
+            whitespace_idx = i;
+        } else if (escaping) {
+            escaping = false;
+        } else if (inside_squotes) {
+            if (input[i] == '\'')
+                inside_squotes = false;
+            else if (input[i] == '\\')
+                escaping = true;
+        } else if (inside_dquotes) {
+            if (input[i] == '\"')
+                inside_dquotes = false;
+            else if (input[i] == '\\')
+                escaping = true;
+        } else {
+            if (input[i] == '\'')
+                inside_squotes = true;
+            else if (input[i] == '\"')
+                inside_dquotes = true;
+        }
     }
 
-    while (regex_search(search_start, input.cend(), match, whitespace)) {
-        arg = match.prefix();
+    if (inside_squotes)
+        return INSIDE_SINGLE_QUOTES;
+    else if (inside_dquotes)
+        return INSIDE_DOUBLE_QUOTES;
+
+    return whitespace_idx;
+}
+
+std::vector<string> cmd_tokenize(string input) {
+    string arg;
+    input += ' ';
+    unsigned int argc = 0;
+
+    std::vector<string> tokens;
+
+    int ws;
+    while ((ws = whitespace_separator(input)) >= 0) {
+        arg = input.substr(0, ws);
+        input = input.substr(ws + 1, string::npos);
+
+        trim(arg);
+
+        if (arg.empty()) {
+            continue;
+        }
 
         if (arg[0] == '"' && arg[arg.length() - 1] == '"') {
             // Trim the double quotes off of a string argument and evaluate substitutions
@@ -398,23 +422,14 @@ char** cmd_tokenize(string input) {
             }
         }
 
-        // Allocate memory for the argument
-        tokens[argc] = (char*) malloc((arg.length() + 1) * sizeof(char));
-
-        if (!tokens[argc]) {
-            perror("Error when allocating argument buffer");
-            exit(EXIT_FAILURE);
-        }
-
-        // Copy the C string to the allocated memory
-        strcpy(tokens[argc], arg.c_str());
-
         ++argc;
 
-        search_start = match.suffix().first;
+        tokens.push_back(arg);
     }
 
-    tokens[match_count] = nullptr;
+    if (ws == INSIDE_SINGLE_QUOTES || ws == INSIDE_DOUBLE_QUOTES) {
+        std::cerr << "Dropped argument inside unclosed quotes" << std::endl;
+    }
 
     return tokens;
 }
@@ -434,7 +449,11 @@ void suggest(int direction) {
     string suggestion = history.at(history_idx);
 
     // Move back to right after the prompt, then clear the line and print our suggestion
-    std::cout << "\e[" << (cmd_str.length() + suggesting - 1) << "D\e[K";
+    if (!cmd_str.empty()) {
+        std::cout << "\e[" << cmd_str.length() << "D";
+        std::cout << "\e[K";
+    }
+
     cmd_str = suggestion;
     std::cout << cmd_str;
 
@@ -515,7 +534,7 @@ void replace_variables(string &input) {
 }
 
 void cmd_enter(string input, bool is_subcommand) {
-    // No point in running an empty command
+    // No point in running an empty line
     if (input.empty())
         return;
 
@@ -527,7 +546,7 @@ void cmd_enter(string input, bool is_subcommand) {
     bool _or_output = or_output;
     bool _pipe_output = pipe_output;
     bool _and_output = and_output;
-    bool _bg_output = bg_output;
+    bool _bg_command = bg_command;
 
     // Commands are delimited by semicolons, double pipes, one pipe, double ampersands, or one ampersand
     std::smatch match;
@@ -547,14 +566,40 @@ void cmd_enter(string input, bool is_subcommand) {
         or_output = match.str() == "||";
         pipe_output = match.str() == "|";
         and_output = match.str() == "&&";
-        bg_output = match.str() == "&"; // TODO This will probably take a bit of restructuring
+        bg_command = match.str() == "&"; // TODO This will probably take a bit of restructuring
 
         cmd = match.prefix();
         trim(cmd);
+
+        // No point in running an empty command
+        if (cmd.empty())
+            continue;
+
         replace_variables(cmd);
 
         // Lookup our command
-        char **tokens = cmd_tokenize(cmd);
+        std::vector<string> vec_tokens = cmd_tokenize(cmd);
+
+        // Now we have to translate our vector into a nullptr-terminated char**
+        char** tokens = (char**) malloc((vec_tokens.size() + 1) * sizeof(char*));
+        if (!tokens) {
+            perror("Error when allocating arguments buffer");
+            exit(EXIT_FAILURE);
+        }
+
+        for (int i = 0; i < vec_tokens.size(); ++i) {
+            std::string arg = vec_tokens[i];
+
+            tokens[i] = (char*) malloc((arg.length() + 1) * sizeof(char));
+            if (!tokens[i]) {
+                perror("Error when allocating argument buffer");
+                exit(EXIT_FAILURE);
+            }
+
+            strcpy(tokens[i], arg.c_str());
+        }
+
+        tokens[vec_tokens.size()] = nullptr;
 
         // Find if this is a builtin command
         auto it = builtins_map.find(tokens[0]);
@@ -567,7 +612,7 @@ void cmd_enter(string input, bool is_subcommand) {
                 exit(-result - 1);
             }
         } else {
-            cmd_execute(tokens, is_subcommand);
+            cmd_execute(tokens, is_subcommand, bg_command);
         }
 
         if (and_output) {
@@ -585,7 +630,55 @@ void cmd_enter(string input, bool is_subcommand) {
         or_output = _or_output;
         pipe_output = _pipe_output;
         and_output = _and_output;
-        bg_output = _bg_output;
+        bg_command = _bg_command;
+    }
+}
+
+void cmd_complete(string input) {
+    int argc = 0;
+    int ws;
+
+    // No point in completing empty lines or comments
+    if (input.empty() || input[0] == '#')
+        return;
+
+    // Commands are delimited by semicolons, double pipes, one pipe, double ampersands, or one ampersand
+    std::smatch match;
+    std::regex cmd_separator("(;|\\|\\||\\||&&|&)" + not_in_quotes);
+    input += ';';
+    string cmd;
+    string::const_iterator search_start(input.cbegin());
+
+    while (regex_search(search_start, input.cend(), match, cmd_separator)) {
+        search_start = match.suffix().first;
+        cmd = match.prefix();
+        trim(cmd);
+    }
+
+    if (cmd.empty())
+        return;
+
+    while ((ws = whitespace_separator(cmd)) >= 0) {
+        cmd = cmd.substr(ws + 1, string::npos);
+        ++argc;
+    }
+
+    if (ws == INSIDE_SINGLE_QUOTES || ws == INSIDE_DOUBLE_QUOTES)
+        cmd = cmd.substr(1, string::npos);
+
+    if (cmd.empty())
+        return;
+
+    std::cout << std::endl;
+
+    if (argc == 0) {
+        // Suggesting a command
+        auto matches = filter_prefix(executable_map, cmd);
+        for (string match : matches) {
+            std::cout << match << std::endl;
+        }
+    } else {
+        // Suggesting an argument
     }
 }
 
@@ -629,8 +722,8 @@ void process_keypress(char ch) {
                 history_idx = 0;
                 // If this command is running silently, we don't want it in our history.
                 // We also don't want it in our history if this command is the same as the
-                // last non-silent command we executed.
-                if (echo_input && (history.empty() || history.front() != cmd_str))
+                // last non-silent command we executed, or if the command is empty
+                if (echo_input && !cmd_str.empty() && (history.empty() || history.front() != cmd_str))
                     history.insert(history.begin(), cmd_str);
                 cmd_str.clear();
                 suggesting = false;
@@ -638,6 +731,9 @@ void process_keypress(char ch) {
                 load_prompt();
                 if (echo_input)
                     std::cout << prompt;
+                break;
+            case 0x09: // TAB
+                cmd_complete(cmd_str);
                 break;
             case EOF:
                 break;
@@ -680,6 +776,9 @@ int main(int argc, char **argv) {
     pipe(pipefd_output);
     pipe(pipefd_subc);
 
+    // Setup our environment variables
+    setenv("SHELL", SHELL_NAME, true);
+
     builtins_map = {
         { "exit",     builtins::bexit },
         { "cd",       builtins::bcd },
@@ -689,6 +788,7 @@ int main(int argc, char **argv) {
         { "redirect", builtins::bredirect },
         { "silence",  builtins::bsilence },
         { "set",      builtins::bset },
+        { "unset",    builtins::bunset },
         { "ladd",     builtins::bladd },
         { "radd",     builtins::bradd },
         { "reload",   builtins::breload },
@@ -705,8 +805,6 @@ int main(int argc, char **argv) {
 
     load_prompt();
 
-    setenv("SHELL", SHELL_NAME, true);
-
     // Loading from script
     if (argc > 1) {
         execute_script(string(argv[1]));
@@ -720,8 +818,6 @@ int main(int argc, char **argv) {
         process_keypress(c);
         control_c = false;
     }
-
-    std::cout << (int) c << std::endl;
 
     return 0;
 }

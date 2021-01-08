@@ -48,9 +48,9 @@ namespace builtins {
     }
 
     int babout(char **args) {
-        std::cout << "Welcome to WebShell (wsh)!" << std::endl;
-        std::cout << "Created by Luke Donovan" << std::endl;
-        std::cout << std::endl;
+        std::cout << "WebShell (wsh) ";
+        std::cout << "v" << VERSION_MAJOR << "." << VERSION_MINOR << "." << VERSION_PATCH << std::endl;
+        std::cout << "Created by Luke Donovan" << std::endl << std::endl;
         std::cout << "List of builtin commands:" << std::endl;
 
         auto it = builtins_map.begin();
@@ -88,6 +88,12 @@ namespace builtins {
 
     int bset(char **args) {
         setenv(args[1], args[2], true);
+
+        return CODE_CONTINUE;
+    }
+
+    int bunset(char **args) {
+        unsetenv(args[1]);
 
         return CODE_CONTINUE;
     }

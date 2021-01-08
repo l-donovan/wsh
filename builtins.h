@@ -9,6 +9,7 @@ namespace builtins {
     int bredirect(char **args);
     int bsilence(char **args);
     int bset(char **args);
+    int bunset(char **args);
     int bladd(char **args);
     int bradd(char **args);
     int breload(char **args);

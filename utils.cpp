@@ -1,10 +1,15 @@
 #include "global.h"
 #include "utils.h"
 
+#include <map>
 #include <regex>
 #include <stdio.h>
 #include <string>
+#include <sys/stat.h>
 #include <termios.h>
+#include <vector>
+
+using std::string;
 
 static struct termios old, current;
 
@@ -45,7 +50,7 @@ char getche(void) {
     return getch_(1);
 }
 
-void trim(std::string &s) {
+void trim(string &s) {
     s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
         return !std::isspace(ch);
     }));
@@ -53,5 +58,34 @@ void trim(std::string &s) {
     s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
         return !std::isspace(ch);
     }).base(), s.end());
+}
+
+bool dir_exists(const string& name) {
+    struct stat buffer;
+    return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFDIR);
+}
+
+bool file_exists(const string& name) {
+    struct stat buffer;
+    return (stat(name.c_str(), &buffer) == 0) && (buffer.st_mode & S_IFREG);
+}
+
+bool any_exists(const string& name) {
+    struct stat buffer;
+    return stat(name.c_str(), &buffer) == 0;
+}
+
+std::vector<string> filter_prefix(const std::map<string, string>& map, const string& search_for) {
+    std::vector<string> output;
+
+    auto it = map.begin();
+    while (it != map.end()) {
+        string name = it->first;
+        if (name.rfind(search_for, 0) == 0)
+            output.push_back(name);
+        ++it;
+    }
+
+    return output;
 }
 

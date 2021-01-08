@@ -19,3 +19,6 @@
 
 #define INSERT_END   -1
 
+#define NO_MORE_WHITESPACE   -1
+#define INSIDE_SINGLE_QUOTES -2
+#define INSIDE_DOUBLE_QUOTES -3

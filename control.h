@@ -14,8 +14,10 @@
 #define READ_END  0
 #define WRITE_END 1
 
-#define DIRECTION_UP   0
-#define DIRECTION_DOWN 1
+#define DIRECTION_UP    0
+#define DIRECTION_DOWN  1
+#define DIRECTION_RIGHT 2
+#define DIRECTION_LEFT  3
 
 #define INSERT_END   -1
 

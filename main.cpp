@@ -17,14 +17,15 @@
 #include <pwd.h>
 #include <regex>
 #include <string>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 using std::string;
 
-string escape_string(string);
-string parse_path_file(string);
+void select_completions(int);
+void print_completions(int);
 void initialize_path();
 void load_path();
 void load_prompt();
@@ -37,11 +38,16 @@ void suggest(int);
 void replace_variables(string&);
 void cmd_enter(string, bool);
 int cmd_execute(char**, bool, bool);
+
+string escape_string(string);
+string parse_path_file(string);
 std::vector<string> cmd_tokenize(string);
 
 char c;
 unsigned int last_status = 0;
 unsigned int history_idx = 0;
+int completion_idx = -1;
+int arg_idx = 0;
 int input_idx = INSERT_END;
 bool echo_input  = true;
 bool in_esc_seq  = false;
@@ -50,10 +56,11 @@ bool pipe_input  = false;
 bool pipe_output = false;
 bool or_output   = false;
 bool and_output  = false;
-bool bg_command   = false;
+bool bg_command  = false;
 bool suggesting  = false;
 bool control_c   = false;
 bool subcommand  = false;
+bool completing  = false;
 int pipefd_input[2];
 int pipefd_output[2];
 int pipefd_subc[2];
@@ -66,10 +73,13 @@ std::map<string, string> executable_map;
 std::map<string, string> alias_map;
 std::map<string, int (*)(char**)> builtins_map;
 std::vector<string> history;
+std::vector<string> matches;
 string esc_seq;
 string cmd_str;
 string prompt;
 string subc_out;
+
+NullStream null;
 
 // This horrible lookahead assertion makes sure we aren't inside of a string
 // Because std::regex supports neither named backreferences nor relative numbered backreferences,
@@ -85,6 +95,14 @@ void files_in_dir(string path) {
     } else {
         std::cerr << path << " is not a valid directory" << std::endl;
     }
+}
+
+inline std::ostream& sout() {
+    return echo_input ? std::cout : null;
+}
+
+inline std::ostream& serr() {
+    return echo_input ? std::cerr : null;
 }
 
 void execute_script(string filename) {
@@ -450,12 +468,12 @@ void suggest(int direction) {
 
     // Move back to right after the prompt, then clear the line and print our suggestion
     if (!cmd_str.empty()) {
-        std::cout << "\e[" << cmd_str.length() << "D";
-        std::cout << "\e[K";
+        sout() << "\e[" << cmd_str.length() << "D"
+               << "\e[K";
     }
 
     cmd_str = suggestion;
-    std::cout << cmd_str;
+    sout() << cmd_str;
 
     suggesting = true;
 }
@@ -464,26 +482,41 @@ bool process_esc_seq() {
     std::smatch match;
 
     if (std::regex_match(esc_seq, match, std::regex("\\[([ABCD])"))) {
-        if (match[1] == "A") { // UP
-            suggest(DIRECTION_UP);
-        } else if (match[1] == "B") { // DOWN
-            suggest(DIRECTION_DOWN);
-        } else if (match[1] == "C") { // RIGHT
-            if (input_idx != INSERT_END) {
-                if (++input_idx > cmd_str.length() - 1)
-                    input_idx = INSERT_END;
-
-                if (echo_input)
-                    std::cout << "\e[C";
+        if (completing) {
+            if (match[1] == "A") { // UP
+                select_completions(DIRECTION_UP);
+                print_completions(completion_idx);
+            } else if (match[1] == "B") { // DOWN
+                select_completions(DIRECTION_DOWN);
+                print_completions(completion_idx);
+            } else if (match[1] == "C") { // RIGHT
+                select_completions(DIRECTION_RIGHT);
+                print_completions(completion_idx);
+            } else if (match[1] == "D") { // LEFT
+                select_completions(DIRECTION_LEFT);
+                print_completions(completion_idx);
             }
-        } else if (match[1] == "D") { // LEFT
-            if (input_idx != 0)
-                std::cout << "\e[D";
+        } else {
+            if (match[1] == "A") { // UP
+                suggest(DIRECTION_UP);
+            } else if (match[1] == "B") { // DOWN
+                suggest(DIRECTION_DOWN);
+            } else if (match[1] == "C") { // RIGHT
+                if (input_idx != INSERT_END) {
+                    if (++input_idx > cmd_str.length() - 1)
+                        input_idx = INSERT_END;
 
-            if (input_idx == INSERT_END)
-                input_idx = cmd_str.length() - 1;
-            else if (input_idx > 0)
-                --input_idx;
+                    sout() << "\e[C";
+                }
+            } else if (match[1] == "D") { // LEFT
+                if (input_idx != 0)
+                    sout() << "\e[D";
+
+                if (input_idx == INSERT_END)
+                    input_idx = cmd_str.length() - 1;
+                else if (input_idx > 0)
+                    --input_idx;
+            }
         }
 
         return true;
@@ -496,6 +529,7 @@ void replace_variables(string &input) {
     string output(input);
     int offset = 0;
 
+    // Replace with environment variables
     std::smatch match;
     std::regex variable("\\{(\\w+)\\}");
     string::const_iterator search_start(input.cbegin());
@@ -508,6 +542,7 @@ void replace_variables(string &input) {
         search_start = match.suffix().first;
     }
 
+    // Execute subcommands and replace with their output
     std::regex expr("\\{\\[(.+?)\\]\\}");
     search_start = input.cbegin();
     offset = 0;
@@ -519,6 +554,7 @@ void replace_variables(string &input) {
         search_start = match.suffix().first;
     }
 
+    // Expand home directory
     std::regex tilde("~");
     search_start = input.cbegin();
     string home(homedir);
@@ -566,7 +602,7 @@ void cmd_enter(string input, bool is_subcommand) {
         or_output = match.str() == "||";
         pipe_output = match.str() == "|";
         and_output = match.str() == "&&";
-        bg_command = match.str() == "&"; // TODO This will probably take a bit of restructuring
+        bg_command = match.str() == "&";
 
         cmd = match.prefix();
         trim(cmd);
@@ -634,7 +670,53 @@ void cmd_enter(string input, bool is_subcommand) {
     }
 }
 
+void print_completions(int index) {
+    struct winsize size;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size);
+
+    int chars_per_col = size.ws_col / COMPLETION_COLUMNS - 1;
+
+    sout() << "\e7"      // Save our cursor position
+           << "\e[J"     // Clear the rest of the screen
+           << std::endl;
+
+    for (int i = 0; i < matches.size(); ++i) {
+        if (i > 0 && i % COMPLETION_COLUMNS == 0)
+            sout() << std::endl;
+
+        string entry = matches[i];
+
+        if (entry.length() < chars_per_col)
+            entry.append(chars_per_col - entry.length(), ' ');
+
+        if (i == index)
+            sout() << "\e[7m"  // Invert the characters
+                   << entry.substr(0, chars_per_col)
+                   << "\e[m "; // Return to normal
+        else
+            sout() << entry.substr(0, chars_per_col) << " ";
+    }
+
+    sout() << "\e8"; // Move back to our saved cursor position
+}
+
+void select_completions(int direction) {
+    // It's necessary to cast the output of size to a
+    // signed integer for comparing to completion_idx
+    int size = (int) matches.size();
+
+    if (direction == DIRECTION_DOWN && (completion_idx < size - COMPLETION_COLUMNS))
+        completion_idx += COMPLETION_COLUMNS;
+    else if (direction == DIRECTION_UP && (completion_idx >= COMPLETION_COLUMNS))
+        completion_idx -= COMPLETION_COLUMNS;
+    else if (direction == DIRECTION_RIGHT)
+        completion_idx = (completion_idx + 1) % size;
+    else if (direction == DIRECTION_LEFT)
+        completion_idx = (completion_idx - 1) % size;
+}
+
 void cmd_complete(string input) {
+    arg_idx = 0;
     int argc = 0;
     int ws;
 
@@ -646,39 +728,53 @@ void cmd_complete(string input) {
     std::smatch match;
     std::regex cmd_separator("(;|\\|\\||\\||&&|&)" + not_in_quotes);
     input += ';';
+    string arg;
     string cmd;
     string::const_iterator search_start(input.cbegin());
 
     while (regex_search(search_start, input.cend(), match, cmd_separator)) {
         search_start = match.suffix().first;
         cmd = match.prefix();
+        // Keep track of our absolute position in the command string
+        arg_idx += cmd.length() + match.length();
         trim(cmd);
     }
 
+    arg_idx -= cmd.length() + 1;
+
+    // We don't do completions for empty commands
     if (cmd.empty())
         return;
 
+    // Walk through the command in order to find the last argument
     while ((ws = whitespace_separator(cmd)) >= 0) {
         cmd = cmd.substr(ws + 1, string::npos);
+        arg_idx += ws + 1;
         ++argc;
     }
+
+    // Whatever we have left is our argument
+    arg = cmd;
 
     if (ws == INSIDE_SINGLE_QUOTES || ws == INSIDE_DOUBLE_QUOTES)
         cmd = cmd.substr(1, string::npos);
 
+    // We don't do completions for empty arguments
     if (cmd.empty())
         return;
 
-    std::cout << std::endl;
-
     if (argc == 0) {
         // Suggesting a command
-        auto matches = filter_prefix(executable_map, cmd);
-        for (string match : matches) {
-            std::cout << match << std::endl;
+        matches = filter_prefix(executable_map, cmd);
+        if (completing) {
+            select_completions(DIRECTION_RIGHT);
+        } else {
+            completing = true;
+            completion_idx = -1;
         }
+        print_completions(completion_idx);
     } else {
-        // Suggesting an argument
+        // TODO Suggesting an argument
     }
 }
 
@@ -702,22 +798,29 @@ void process_keypress(char ch) {
                 if (!cmd_str.empty()) {
                     if (input_idx == INSERT_END) {
                         cmd_str.pop_back();
-                        if (echo_input)
-                            std::cout << "\x08 \x08";
+                        sout() << "\x08 \x08";
                     } else if (input_idx != 0) {
                         --input_idx;
                         cmd_str.erase(input_idx, 1);
-                        if (echo_input) {
-                            std::cout << "\x08\e[K"; // Backspace and clear the rest of the line
-                            std::cout << cmd_str.substr(input_idx, string::npos); // Print the second part of the command
-                            std::cout << "\e[" << (cmd_str.length() - input_idx) << "D"; // Move the cursor back
-                        }
+                        sout() << "\x08\e[K" // Backspace and clear the rest of the line
+                               << cmd_str.substr(input_idx, string::npos) // Print the second part of the command
+                               << "\e[" << (cmd_str.length() - input_idx) << "D"; // Move the cursor back
                     }
                 }
                 break;
             case 0x0a: // NEWLINE
-                if (echo_input)
-                    std::cout << std::endl;
+                if (completing && completion_idx > -1) {
+                    int len = cmd_str.length() - arg_idx;
+                    sout() << "\e[J"
+                           << "\e[" << len << "D"
+                           << matches[completion_idx];
+                    cmd_str.replace(arg_idx, len, matches[completion_idx]);
+                    completing = false;
+                    break;
+                }
+
+                sout() << std::endl;
+
                 cmd_enter(cmd_str, false);
                 history_idx = 0;
                 // If this command is running silently, we don't want it in our history.
@@ -729,25 +832,25 @@ void process_keypress(char ch) {
                 suggesting = false;
                 input_idx = INSERT_END;
                 load_prompt();
-                if (echo_input)
-                    std::cout << prompt;
+                sout() << prompt;
                 break;
             case 0x09: // TAB
                 cmd_complete(cmd_str);
+                break;
+            case 0x0c: // Ctrl+L
+                cmd_enter("clear", false);
+                sout() << prompt << cmd_str;
                 break;
             case EOF:
                 break;
             default:
                 if (input_idx == INSERT_END) {
                     cmd_str += ch;
-                    if (echo_input)
-                        std::cout << ch;
+                    sout() << ch;
                 } else {
                     cmd_str.insert(input_idx, 1, ch);
-                    if (echo_input) {
-                        std::cout << cmd_str.substr(input_idx, string::npos);
-                        std::cout << "\e[" << (cmd_str.length() - 1 - input_idx) << "D";
-                    }
+                    sout() << cmd_str.substr(input_idx, string::npos)
+                           << "\e[" << (cmd_str.length() - 1 - input_idx) << "D";
                     ++input_idx;
                 }
 
@@ -758,8 +861,7 @@ void process_keypress(char ch) {
 
 void sig_int_callback(int s) {
     cmd_str.clear();
-    if (echo_input)
-        std::cout << std::endl << prompt;
+    sout() << "\e[J" << std::endl << prompt;
     control_c = true;
 }
 
@@ -811,8 +913,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (echo_input)
-        std::cout << prompt;
+    sout() << prompt;
 
     while ((c = getch()) != EOF || control_c) {
         process_keypress(c);

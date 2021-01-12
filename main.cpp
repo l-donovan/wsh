@@ -500,10 +500,10 @@ void print_completions(int index) {
     struct winsize size;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &size);
 
-    int chars_per_col = size.ws_col / COMPLETION_COLUMNS - 1;
-    int rows_added = matches.size() / COMPLETION_COLUMNS ?: 1;
-
     int row, col;
+    int chars_per_col = size.ws_col / COMPLETION_COLUMNS - 1;
+    int rows_added = matches.size() / COMPLETION_COLUMNS + 1;
+
     get_cursor_pos(&row, &col); // Save our cursor position
 
     sout() << "\e[J"     // Clear the rest of the screen
@@ -526,8 +526,8 @@ void print_completions(int index) {
             sout() << entry.substr(0, chars_per_col) << " ";
     }
 
-    if (row + rows_added >= size.ws_row)
-        row = size.ws_row - rows_added - 1;
+    if (row + rows_added > size.ws_row)
+        row = size.ws_row - rows_added;
 
     sout() << "\e[" << row << ";" << col << "H"; // Move back to our saved cursor position
 }
@@ -618,10 +618,11 @@ void process_keypress(char ch) {
                 }
                 break;
             case 0x0a: // NEWLINE
+                sout() << "\e[J";
+
                 if (completing && completion_idx > -1) {
                     int len = arg.length();
-                    sout() << "\e[J"
-                           << "\e[" << len << "D"
+                    sout() << "\e[" << len << "D"
                            << matches[completion_idx];
                     cmd_str.replace(cmd_str.length() - arg.length(), len, matches[completion_idx]);
                     completing = false;

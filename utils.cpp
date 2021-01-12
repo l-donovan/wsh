@@ -42,6 +42,8 @@ char getch() {
     return ch;
 }
 
+// Uses a DSR escape to retrieve cursor row and column
+// Beware: The row and column are 1-indexed!
 void get_cursor_pos(int *row, int *col) {
     string row_str;
     string col_str;

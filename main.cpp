@@ -672,8 +672,6 @@ void sig_int_callback(int s) {
 }
 
 int main(int argc, char **argv) {
-    tokenize("this  is \"a test\" 'of   my'   tokenization| system && i hope&it;works \"uh oh, trailing...");
-    tokenize("set time `time | format -blah`");
     // Register our SIGINT handler
     struct sigaction sig_int_handler;
     sig_int_handler.sa_handler = sig_int_callback;

@@ -81,11 +81,6 @@ string arg;
 
 NullStream null;
 
-// This horrible lookahead assertion makes sure we aren't inside of a string
-// Because std::regex supports neither named backreferences nor relative numbered backreferences,
-// the reference \4 is hardcoded and expects exactly one capturing group before this snippet
-string not_in_quotes("(?=([^\"'\\\\]*(\\\\.|([\"'])([^\"'\\\\]*\\\\.)*[^\"'\\\\]*\\4))*[^\"']*$)");
-
 void files_in_dir(string path) {
     struct stat info;
 

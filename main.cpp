@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <variant>
 
 using std::string;
 
@@ -39,9 +40,7 @@ void replace_variables(string&);
 void cmd_enter(string, bool);
 int cmd_execute(char**, bool, bool);
 
-string escape_string(string);
 string parse_path_file(string);
-std::vector<string> cmd_tokenize(string);
 
 char c;
 unsigned int last_status = 0;
@@ -78,6 +77,7 @@ string esc_seq;
 string cmd_str;
 string prompt;
 string subc_out;
+string arg;
 
 NullStream null;
 
@@ -275,183 +275,6 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
     return 1;
 }
 
-string escape_string(string str) {
-    string output = str;
-
-    std::regex escapes("\\\\([\\\\\"'\\$adehHjlnrstT@uvVwW])");
-    string::const_iterator search_start(str.cbegin());
-    std::smatch match;
-    int offset = 0;
-
-    while (regex_search(search_start, str.cend(), match, escapes)) {
-        std::string replacement;
-
-        if (match[1] == "\\" || match[1] == "\"" || match[1] == "\'") {
-            // Replacement of literal backslashes and quotes
-            replacement = match[1];
-        } else if (match[1] == "n") {
-            replacement = "\n";
-        } else if (match[1] == "r") {
-            replacement = "\r";
-        } else if (match[1] == "e") {
-            replacement = "\e";
-        } else if (match[1] == "a") {
-            replacement = "\x07";
-        } else if (match[1] == "h" || match[1] == "H") {
-            char *name = (char*) malloc(_POSIX_HOST_NAME_MAX * sizeof(char));
-            gethostname(name, _POSIX_HOST_NAME_MAX);
-            replacement = string(name);
-        } else if (match[1] == "u") {
-            replacement = getlogin() ?: "";
-        } else if (match[1] == "s" ) {
-            replacement = SHELL_NAME;
-        } else if (match[1] == "w") {
-            replacement = std::filesystem::current_path();
-        } else if (match[1] == "W") {
-            replacement = std::filesystem::current_path().stem();
-        } else if (match[1] == "$") {
-            replacement = geteuid() == 0 ? "#" : "$";
-        } else if (match[1] == "t") {
-            std::time_t t = std::time(0);
-            std::ostringstream os;
-            os << std::put_time(std::localtime(&t), "%H:%M:%S");
-            replacement = os.str();
-        } else if (match[1] == "T") {
-            std::time_t t = std::time(0);
-            std::ostringstream os;
-            os << std::put_time(std::localtime(&t), "%I:%M:%S");
-            replacement = os.str();
-        } else if (match[1] == "@") {
-            std::time_t t = std::time(0);
-            std::ostringstream os;
-            os << std::put_time(std::localtime(&t), "%I:%M:%S %p");
-            replacement = os.str();
-        } else if (match[1] == "d") {
-            std::time_t t = std::time(0);
-            std::ostringstream os;
-            os << std::put_time(std::localtime(&t), "%a %b %d");
-            replacement = os.str();
-        } else if (match[1] == "v") {
-            std::ostringstream os;
-            os << VERSION_MAJOR << "." << VERSION_MINOR;
-            replacement = os.str();
-        } else if (match[1] == "V") {
-            std::ostringstream os;
-            os << VERSION_MAJOR << "." << VERSION_MINOR << "." << VERSION_PATCH;
-            replacement = os.str();
-        }
-
-        output.replace(match.position() + offset, match.length(), replacement);
-        offset += match.position() + replacement.length();
-        search_start = match.suffix().first;
-    }
-
-    return output;
-}
-
-int whitespace_separator(string input) {
-    bool inside_squotes = false;
-    bool inside_dquotes = false;
-    bool whitespace_found = false;
-    bool escaping = false;
-    int whitespace_idx = NO_MORE_WHITESPACE;
-
-    for (int i = 0; i < input.size(); ++i) {
-        if (whitespace_found) {
-            if (input[i] == ' ')
-                whitespace_idx = i;
-            else
-                return whitespace_idx;
-        } else if (input[i] == ' ' && !inside_squotes && !inside_dquotes) {
-            whitespace_found = true;
-            whitespace_idx = i;
-        } else if (escaping) {
-            escaping = false;
-        } else if (inside_squotes) {
-            if (input[i] == '\'')
-                inside_squotes = false;
-            else if (input[i] == '\\')
-                escaping = true;
-        } else if (inside_dquotes) {
-            if (input[i] == '\"')
-                inside_dquotes = false;
-            else if (input[i] == '\\')
-                escaping = true;
-        } else {
-            if (input[i] == '\'')
-                inside_squotes = true;
-            else if (input[i] == '\"')
-                inside_dquotes = true;
-        }
-    }
-
-    if (inside_squotes)
-        return INSIDE_SINGLE_QUOTES;
-    else if (inside_dquotes)
-        return INSIDE_DOUBLE_QUOTES;
-
-    return whitespace_idx;
-}
-
-std::vector<string> cmd_tokenize(string input) {
-    string arg;
-    input += ' ';
-    unsigned int argc = 0;
-
-    std::vector<string> tokens;
-
-    int ws;
-    while ((ws = whitespace_separator(input)) >= 0) {
-        arg = input.substr(0, ws);
-        input = input.substr(ws + 1, string::npos);
-
-        trim(arg);
-
-        if (arg.empty()) {
-            continue;
-        }
-
-        if (arg[0] == '"' && arg[arg.length() - 1] == '"') {
-            // Trim the double quotes off of a string argument and evaluate substitutions
-            arg = arg.substr(1, arg.length() - 2);
-            arg = escape_string(arg);
-        } else if (arg[0] == '\'' && arg[arg.length() - 1] == '\'') {
-            // Trim the single quotes off of a string argument
-            arg = arg.substr(1, arg.length() - 2);
-        }
-
-        // If we are looking at the command itself...
-        if (argc == 0) {
-            // and the command has an alias...
-            auto alias = alias_map.find(arg);
-            if (alias != alias_map.end()) {
-                // substitute the alias
-                arg = alias->second;
-            }
-
-            // and the command isn't a builtin...
-            if (builtins_map.find(arg) == builtins_map.end()) {
-                // and it's on PATH...
-                auto executable = executable_map.find(arg);
-                if (executable != executable_map.end()) {
-                    // expand it to its full path
-                    arg = executable->second;
-                }
-            }
-        }
-
-        ++argc;
-
-        tokens.push_back(arg);
-    }
-
-    if (ws == INSIDE_SINGLE_QUOTES || ws == INSIDE_DOUBLE_QUOTES) {
-        std::cerr << "Dropped argument inside unclosed quotes" << std::endl;
-    }
-
-    return tokens;
-}
-
 void suggest(int direction) {
     if (history.empty())
         return;
@@ -542,18 +365,6 @@ void replace_variables(string &input) {
         search_start = match.suffix().first;
     }
 
-    // Execute subcommands and replace with their output
-    std::regex expr("\\{\\[(.+?)\\]\\}");
-    search_start = input.cbegin();
-    offset = 0;
-
-    while (regex_search(search_start, input.cend(), match, expr)) {
-        cmd_enter(match[1], true);
-        output.replace(match.position() + offset, match.length(), subc_out);
-        offset += match.position() + subc_out.length();
-        search_start = match.suffix().first;
-    }
-
     // Expand home directory
     std::regex tilde("~");
     search_start = input.cbegin();
@@ -569,6 +380,114 @@ void replace_variables(string &input) {
     input = output;
 }
 
+char** vec_to_charptr(std::vector<string> vec_tokens) {
+    // Now we have to translate our vector into a nullptr-terminated char**
+    char** tokens = (char**) malloc((vec_tokens.size() + 1) * sizeof(char*));
+    if (!tokens) {
+        perror("Error when allocating arguments buffer");
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < vec_tokens.size(); ++i) {
+        std::string arg = vec_tokens[i];
+
+        tokens[i] = (char*) malloc((arg.length() + 1) * sizeof(char));
+        if (!tokens[i]) {
+            perror("Error when allocating argument buffer");
+            exit(EXIT_FAILURE);
+        }
+
+        strcpy(tokens[i], arg.c_str());
+    }
+
+    tokens[vec_tokens.size()] = nullptr;
+
+    return tokens;
+}
+
+void cmd_launch(std::vector<command> commands, bool is_subcommand) {
+    string arg_str;
+
+    for (int i = 0; i < commands.size(); ++i) {
+        auto cmd = commands[i];
+        std::vector<string> args;
+
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+
+        for (int j = 0; j < cmd.args.size(); ++j) {
+            auto arg = cmd.args[j];
+
+            if (std::holds_alternative<string>(arg)) {
+                arg_str = std::get<string>(arg);
+            } else if (std::holds_alternative<CommandList>(arg)) {
+                cmd_launch(std::get<CommandList>(arg), true);
+                arg_str = subc_out;
+            }
+
+            // Replace variables and expand tildes
+            replace_variables(arg_str);
+
+            // If we are looking at the command itself...
+            if (j == 0) {
+                // and the command has an alias...
+                auto alias = alias_map.find(arg_str);
+                if (alias != alias_map.end()) {
+                    // substitute the alias
+                    arg_str = alias->second;
+                }
+
+                // and the command isn't a builtin...
+                if (builtins_map.find(arg_str) == builtins_map.end()) {
+                    // and it's on PATH...
+                    auto executable = executable_map.find(arg_str);
+                    if (executable != executable_map.end()) {
+                        // expand it to its full path
+                        arg_str = executable->second;
+                    }
+                }
+            }
+
+            args.push_back(arg_str);
+        }
+
+        if (cmd.pipe_output) {
+            pipe_output = true;
+        }
+
+        char **tokens = vec_to_charptr(args);
+
+        // Find if this is a builtin command
+        auto it = builtins_map.find(tokens[0]);
+        if (it != builtins_map.end()) {
+            auto builtin_fn = it->second;
+            int result = builtin_fn(tokens);
+
+            if (result >= 0)
+                last_status = result;
+            else
+                exit(-result - 1);
+
+            if (is_subcommand)
+                subc_out = std::to_string(last_status);
+        } else {
+            cmd_execute(tokens, is_subcommand, cmd.bg_command);
+        }
+
+        if (cmd.and_output) {
+            skip_next = last_status != 0;
+            and_output = false;
+        }
+
+        if (cmd.or_output) {
+            skip_next = last_status == 0;
+            or_output = false;
+        }
+    }
+}
+
 void cmd_enter(string input, bool is_subcommand) {
     // No point in running an empty line
     if (input.empty())
@@ -578,96 +497,9 @@ void cmd_enter(string input, bool is_subcommand) {
     if (input[0] == '#')
         return;
 
-    // We don't want the subcommand to affect the parent command
-    bool _or_output = or_output;
-    bool _pipe_output = pipe_output;
-    bool _and_output = and_output;
-    bool _bg_command = bg_command;
+    std::vector<command> commands = tokenize(input);
 
-    // Commands are delimited by semicolons, double pipes, one pipe, double ampersands, or one ampersand
-    std::smatch match;
-    std::regex cmd_separator("(;|\\|\\||\\||&&|&)" + not_in_quotes);
-    input += ';';
-    string cmd;
-    string::const_iterator search_start(input.cbegin());
-
-    while (regex_search(search_start, input.cend(), match, cmd_separator)) {
-        search_start = match.suffix().first;
-
-        if (skip_next) {
-            skip_next = false;
-            continue;
-        }
-
-        or_output = match.str() == "||";
-        pipe_output = match.str() == "|";
-        and_output = match.str() == "&&";
-        bg_command = match.str() == "&";
-
-        cmd = match.prefix();
-        trim(cmd);
-
-        // No point in running an empty command
-        if (cmd.empty())
-            continue;
-
-        replace_variables(cmd);
-
-        // Lookup our command
-        std::vector<string> vec_tokens = cmd_tokenize(cmd);
-
-        // Now we have to translate our vector into a nullptr-terminated char**
-        char** tokens = (char**) malloc((vec_tokens.size() + 1) * sizeof(char*));
-        if (!tokens) {
-            perror("Error when allocating arguments buffer");
-            exit(EXIT_FAILURE);
-        }
-
-        for (int i = 0; i < vec_tokens.size(); ++i) {
-            std::string arg = vec_tokens[i];
-
-            tokens[i] = (char*) malloc((arg.length() + 1) * sizeof(char));
-            if (!tokens[i]) {
-                perror("Error when allocating argument buffer");
-                exit(EXIT_FAILURE);
-            }
-
-            strcpy(tokens[i], arg.c_str());
-        }
-
-        tokens[vec_tokens.size()] = nullptr;
-
-        // Find if this is a builtin command
-        auto it = builtins_map.find(tokens[0]);
-        if (it != builtins_map.end()) {
-            auto builtin_fn = it->second;
-            int result = builtin_fn(tokens);
-            if (result >= 0) {
-                last_status = result;
-            } else {
-                exit(-result - 1);
-            }
-        } else {
-            cmd_execute(tokens, is_subcommand, bg_command);
-        }
-
-        if (and_output) {
-            skip_next = last_status != 0;
-            and_output = false;
-        }
-
-        if (or_output) {
-            skip_next = last_status == 0;
-            or_output = false;
-        }
-    }
-
-    if (is_subcommand) {
-        or_output = _or_output;
-        pipe_output = _pipe_output;
-        and_output = _and_output;
-        bg_command = _bg_command;
-    }
+    cmd_launch(commands, false);
 }
 
 void print_completions(int index) {
@@ -716,56 +548,30 @@ void select_completions(int direction) {
 }
 
 void cmd_complete(string input) {
-    arg_idx = 0;
-    int argc = 0;
-    int ws;
-
-    // No point in completing empty lines or comments
-    if (input.empty() || input[0] == '#')
+    // No point in running an empty line
+    if (input.empty())
         return;
 
-    // Commands are delimited by semicolons, double pipes, one pipe, double ampersands, or one ampersand
-    std::smatch match;
-    std::regex cmd_separator("(;|\\|\\||\\||&&|&)" + not_in_quotes);
-    input += ';';
-    string arg;
-    string cmd;
-    string::const_iterator search_start(input.cbegin());
-
-    while (regex_search(search_start, input.cend(), match, cmd_separator)) {
-        search_start = match.suffix().first;
-        cmd = match.prefix();
-        // Keep track of our absolute position in the command string
-        arg_idx += cmd.length() + match.length();
-        trim(cmd);
-    }
-
-    arg_idx -= cmd.length() + 1;
-
-    // We don't do completions for empty commands
-    if (cmd.empty())
+    // Comments are easy enough to handle
+    if (input[0] == '#')
         return;
 
-    // Walk through the command in order to find the last argument
-    while ((ws = whitespace_separator(cmd)) >= 0) {
-        cmd = cmd.substr(ws + 1, string::npos);
-        arg_idx += ws + 1;
-        ++argc;
-    }
+    std::vector<command> commands = tokenize(input);
 
-    // Whatever we have left is our argument
-    arg = cmd;
-
-    if (ws == INSIDE_SINGLE_QUOTES || ws == INSIDE_DOUBLE_QUOTES)
-        cmd = cmd.substr(1, string::npos);
-
-    // We don't do completions for empty arguments
-    if (cmd.empty())
+    if (commands.empty())
         return;
 
-    if (argc == 0) {
+    auto last_command = commands.back();
+    auto last_arg = last_command.args.back();
+
+    if (!std::holds_alternative<string>(last_arg))
+        return;
+
+    arg = std::get<string>(last_arg);
+
+    if (last_command.args.size() == 1) {
         // Suggesting a command
-        matches = filter_prefix(executable_map, cmd);
+        matches = filter_prefix(executable_map, arg);
         if (completing) {
             select_completions(DIRECTION_RIGHT);
         } else {
@@ -810,11 +616,11 @@ void process_keypress(char ch) {
                 break;
             case 0x0a: // NEWLINE
                 if (completing && completion_idx > -1) {
-                    int len = cmd_str.length() - arg_idx;
+                    int len = arg.length();
                     sout() << "\e[J"
                            << "\e[" << len << "D"
                            << matches[completion_idx];
-                    cmd_str.replace(arg_idx, len, matches[completion_idx]);
+                    cmd_str.replace(cmd_str.length() - arg.length(), len, matches[completion_idx]);
                     completing = false;
                     break;
                 }
@@ -866,6 +672,8 @@ void sig_int_callback(int s) {
 }
 
 int main(int argc, char **argv) {
+    tokenize("this  is \"a test\" 'of   my'   tokenization| system && i hope&it;works \"uh oh, trailing...");
+    tokenize("set time `time | format -blah`");
     // Register our SIGINT handler
     struct sigaction sig_int_handler;
     sig_int_handler.sa_handler = sig_int_callback;

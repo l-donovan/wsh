@@ -21,4 +21,4 @@ alias c "clear"
 
 # How about a little greeting. And some subcommands for good measure
 echo "Welcome to \e[38;5;166mw\e[38;5;167ms\e[38;5;168mh\e[m!"
-echo "It is {[date '+%b %d']}"
+echo "It is" `date '+%b %d'`

@@ -19,6 +19,7 @@ int token_separator(std::string);
 std::vector<command> tokenize(std::string);
 std::string escape_string(std::string);
 void print_commands(std::vector<command> commands);
+std::vector<std::string> complete_path(std::string path);
 
 class NullStream : public std::ostream {
 public:

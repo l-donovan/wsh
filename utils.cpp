@@ -300,3 +300,24 @@ std::vector<command> tokenize(string input) {
     return commands;
 }
 
+std::vector<string> complete_path(string path) {
+    auto idx = path.find_last_of('/');
+    string head;
+    std::vector<string> paths;
+
+    if (idx != std::string::npos) {
+        head = path.substr(0, idx);
+    } else {
+        head = "./";
+        path = head + path;
+    }
+
+    for (const auto & entry : std::filesystem::directory_iterator(head)) {
+        string option = entry.path().string();
+        if (option.rfind(path, 0) == 0) {
+            paths.push_back(option);
+        }
+    }
+
+    return paths;
+}

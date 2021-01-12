@@ -46,7 +46,6 @@ char c;
 unsigned int last_status = 0;
 unsigned int history_idx = 0;
 int completion_idx = -1;
-int arg_idx = 0;
 int input_idx = INSERT_END;
 bool echo_input  = true;
 bool in_esc_seq  = false;
@@ -543,7 +542,7 @@ void select_completions(int direction) {
 }
 
 void cmd_complete(string input) {
-    // No point in running an empty line
+    // No point in trying to complete an empty line
     if (input.empty())
         return;
 
@@ -567,16 +566,19 @@ void cmd_complete(string input) {
     if (last_command.args.size() == 1) {
         // Suggesting a command
         matches = filter_prefix(executable_map, arg);
-        if (completing) {
-            select_completions(DIRECTION_RIGHT);
-        } else {
-            completing = true;
-            completion_idx = -1;
-        }
-        print_completions(completion_idx);
     } else {
-        // TODO Suggesting an argument
+        // Suggesting an argument
+        matches = complete_path(arg);
     }
+
+    if (completing) {
+        select_completions(DIRECTION_RIGHT);
+    } else {
+        completing = true;
+        completion_idx = -1;
+    }
+
+    print_completions(completion_idx);
 }
 
 void process_keypress(char ch) {

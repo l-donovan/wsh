@@ -9,7 +9,6 @@
 struct command;
 
 char getch(void);
-char getche(void);
 void trim(std::string&);
 bool dir_exists(const std::string&);
 bool file_exists(const std::string&);
@@ -20,6 +19,7 @@ std::vector<command> tokenize(std::string);
 std::string escape_string(std::string);
 void print_commands(std::vector<command> commands);
 std::vector<std::string> complete_path(std::string path);
+void get_cursor_pos(int*, int*);
 
 class NullStream : public std::ostream {
 public:

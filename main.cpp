@@ -501,9 +501,12 @@ void print_completions(int index) {
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &size);
 
     int chars_per_col = size.ws_col / COMPLETION_COLUMNS - 1;
+    int rows_added = matches.size() / COMPLETION_COLUMNS ?: 1;
 
-    sout() << "\e7"      // Save our cursor position
-           << "\e[J"     // Clear the rest of the screen
+    int row, col;
+    get_cursor_pos(&row, &col); // Save our cursor position
+
+    sout() << "\e[J"     // Clear the rest of the screen
            << std::endl;
 
     for (int i = 0; i < matches.size(); ++i) {
@@ -523,7 +526,10 @@ void print_completions(int index) {
             sout() << entry.substr(0, chars_per_col) << " ";
     }
 
-    sout() << "\e8"; // Move back to our saved cursor position
+    if (row + rows_added >= size.ws_row)
+        row = size.ws_row - rows_added - 1;
+
+    sout() << "\e[" << row << ";" << col << "H"; // Move back to our saved cursor position
 }
 
 void select_completions(int direction) {

@@ -3,11 +3,11 @@
 #include "global.h"
 #include "utils.h"
 
+#include <cstdio>
 #include <filesystem>
 #include <limits.h>
 #include <map>
 #include <regex>
-#include <stdio.h>
 #include <string>
 #include <sys/stat.h>
 #include <termios.h>
@@ -328,4 +328,40 @@ std::vector<string> complete_path(string path) {
     }
 
     return paths;
+}
+
+std::ostream& operator<<(std::ostream& out, utf8c ch) {
+    for (int i = 0; i < ch.size; ++i) {
+        out << static_cast<char>((ch.bytes >> (i * 8)) & 0b11111111);
+    }
+
+    return out;
+}
+
+std::istream& operator>>(std::istream& in, utf8c ch) {
+    return in;
+}
+
+bool operator==(utf8c a, utf8c b) {
+    return a.bytes == b.bytes;
+}
+
+utf8c getuch() {
+    uint32_t ch = getch();
+    uint8_t nbytes = 0;
+    uint8_t i = 7;
+
+    while (i > 0 && (ch & (1 << i--)) != 0)
+        ++nbytes;
+
+    nbytes = nbytes ?: 1;
+
+    struct utf8c out = { .size = nbytes, .bytes = ch & 0b11111111 };
+
+    for (int i = 1; i < nbytes; ++i) {
+        ch = getch();
+        out.bytes |= (ch & 0b11111111) << (i * 8);
+    }
+
+    return out;
 }

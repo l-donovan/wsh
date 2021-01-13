@@ -32,14 +32,13 @@ void load_path();
 void load_prompt();
 void load_rc();
 void process_keypress(char);
-bool process_esc_seq();
 void files_in_dir(string);
 void execute_script(string);
 void suggest(int);
-void replace_variables(string&);
 void cmd_enter(string, bool);
+bool process_esc_seq();
 int cmd_execute(char**, bool, bool);
-
+string replace_variables(string&);
 string parse_path_file(string);
 
 char c;
@@ -69,7 +68,7 @@ const char *homedir = pw->pw_dir;
 
 std::map<string, string> executable_map;
 std::map<string, string> alias_map;
-std::map<string, int (*)(char**)> builtins_map;
+std::map<string, int (*)(int, char**)> builtins_map;
 std::vector<string> history;
 std::vector<string> matches;
 string esc_seq;
@@ -80,6 +79,14 @@ string arg;
 
 NullStream null;
 
+inline std::ostream& sout() {
+    return echo_input ? std::cout : null;
+}
+
+inline std::ostream& serr() {
+    return echo_input ? std::cerr : null;
+}
+
 void files_in_dir(string path) {
     struct stat info;
 
@@ -87,16 +94,8 @@ void files_in_dir(string path) {
         for (const auto & entry : std::filesystem::directory_iterator(path))
             executable_map.emplace(entry.path().filename(), entry.path());
     } else {
-        std::cerr << path << " is not a valid directory" << std::endl;
+        serr() << path << " is not a valid directory" << std::endl;
     }
-}
-
-inline std::ostream& sout() {
-    return echo_input ? std::cout : null;
-}
-
-inline std::ostream& serr() {
-    return echo_input ? std::cerr : null;
 }
 
 void execute_script(string filename) {
@@ -211,11 +210,10 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
             // Send stdout and stderr to pipe
             dup2(pipefd_output[WRITE_END], STDOUT_FILENO);
             dup2(pipefd_output[WRITE_END], STDERR_FILENO);
-        }
-
-        if (is_subcommand) {
+        } else if (is_subcommand) {
             close(pipefd_subc[READ_END]);
 
+            // Send stdout and stderr to subcommand pipe
             dup2(pipefd_subc[WRITE_END], STDOUT_FILENO);
             dup2(pipefd_subc[WRITE_END], STDERR_FILENO);
         }
@@ -224,6 +222,7 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
             // We would update some sort of status here or something
             perror(args[0]);
         }
+
         exit(EXIT_FAILURE);
     } else if (pid < 0) {
         perror("Error when forking child process");
@@ -245,9 +244,7 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
 
             if (pipe_output) {
                 close(pipefd_output[WRITE_END]);
-            }
-
-            if (is_subcommand) {
+            } else if (is_subcommand) {
                 close(pipefd_subc[WRITE_END]);
 
                 subc_out.clear();
@@ -255,6 +252,11 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
                 while (int nread = read(pipefd_subc[READ_END], subc_buf, 1023)) {
                     subc_buf[nread] = '\0';
                     subc_out += subc_buf;
+                }
+
+                // Trailing newlines break lots of things with subcommands
+                if (subc_out.back() == '\n') {
+                    subc_out.pop_back();
                 }
 
                 close(pipefd_subc[READ_END]);
@@ -342,7 +344,7 @@ bool process_esc_seq() {
     return false;
 }
 
-void replace_variables(string &input) {
+string replace_variables(string &input) {
     string output(input);
     int offset = 0;
 
@@ -371,7 +373,7 @@ void replace_variables(string &input) {
         search_start = match.suffix().first;
     }
 
-    input = output;
+    return output;
 }
 
 char** vec_to_charptr(std::vector<string> vec_tokens) {
@@ -399,6 +401,22 @@ char** vec_to_charptr(std::vector<string> vec_tokens) {
     return tokens;
 }
 
+std::vector<string> flatten_alias(std::vector<command> tokens) {
+    std::vector<string> out;
+
+    auto cmd = tokens.front();
+
+    for (int i = 0; i < cmd.args.size(); ++i) {
+        auto arg = cmd.args[i];
+
+        if (std::holds_alternative<string>(arg)) {
+            out.push_back(std::get<string>(arg));
+        }
+    }
+
+    return out;
+}
+
 void cmd_launch(std::vector<command> commands, bool is_subcommand) {
     string arg_str;
 
@@ -422,7 +440,7 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
             }
 
             // Replace variables and expand tildes
-            replace_variables(arg_str);
+            arg_str = replace_variables(arg_str);
 
             // If we are looking at the command itself...
             if (j == 0) {
@@ -431,6 +449,16 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
                 if (alias != alias_map.end()) {
                     // substitute the alias
                     arg_str = alias->second;
+
+                    // Tokenize the alias
+                    std::vector<command> alias_tokens = tokenize(arg_str);
+                    std::vector<string> tokens = flatten_alias(alias_tokens);
+                    arg_str = tokens.front();
+
+                    // Insert any args the alias may include
+                    for (int k = 1; k < tokens.size(); ++k) {
+                        cmd.args.insert(cmd.args.begin() + k, tokens[k]);
+                    }
                 }
 
                 // and the command isn't a builtin...
@@ -457,7 +485,7 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
         auto it = builtins_map.find(tokens[0]);
         if (it != builtins_map.end()) {
             auto builtin_fn = it->second;
-            int result = builtin_fn(tokens);
+            int result = builtin_fn(args.size(), tokens);
 
             if (result >= 0)
                 last_status = result;
@@ -574,7 +602,7 @@ void cmd_complete(string input) {
         matches = filter_prefix(executable_map, arg);
     } else {
         // Suggesting an argument
-        matches = complete_path(arg);
+        matches = complete_path(replace_variables(arg));
     }
 
     if (completing) {
@@ -617,9 +645,23 @@ void process_keypress(char ch) {
                     }
                 }
                 break;
-            case 0x0a: // NEWLINE
+            case 0x20: // SPACE
                 sout() << "\e[J";
 
+                completing = false;
+
+                if (input_idx == INSERT_END) {
+                    cmd_str += ch;
+                    sout() << ch;
+                } else {
+                    cmd_str.insert(input_idx, 1, ch);
+                    sout() << cmd_str.substr(input_idx, string::npos)
+                           << "\e[" << (cmd_str.length() - 1 - input_idx) << "D";
+                    ++input_idx;
+                }
+
+                break;
+            case 0x0a: // NEWLINE
                 if (completing && completion_idx > -1) {
                     int len = arg.length();
                     sout() << "\e[" << len << "D"
@@ -629,7 +671,7 @@ void process_keypress(char ch) {
                     break;
                 }
 
-                sout() << std::endl;
+                sout() << std::endl << "\e[J";
 
                 cmd_enter(cmd_str, false);
                 history_idx = 0;

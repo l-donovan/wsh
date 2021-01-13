@@ -8,6 +8,11 @@
 
 struct command;
 
+struct utf8c {
+    uint8_t size;
+    uint32_t bytes;
+};
+
 char getch(void);
 void trim(std::string&);
 bool dir_exists(const std::string&);
@@ -20,6 +25,11 @@ std::string escape_string(std::string);
 void print_commands(std::vector<command> commands);
 std::vector<std::string> complete_path(std::string path);
 void get_cursor_pos(int*, int*);
+utf8c getuch();
+
+std::ostream& operator<<(std::ostream& out, utf8c ch);
+std::istream& operator>>(std::istream& in, utf8c ch);
+bool operator==(utf8c a, utf8c b);
 
 class NullStream : public std::ostream {
 public:

@@ -1,21 +1,21 @@
 #pragma once
 
 namespace builtins {
-    int bexit(char **args);
-    int bcd(char **args);
-    int babout(char **args);
-    int band(char **args);
-    int bor(char **args);
-    int bredirect(char **args);
-    int bsilence(char **args);
-    int bset(char **args);
-    int bunset(char **args);
-    int bladd(char **args);
-    int bradd(char **args);
-    int breload(char **args);
-    int balias(char **args);
-    int bunalias(char **args);
-    int bexists(char **args);
-    int bequals(char **args);
+    int bexit(int argc, char **args);
+    int bcd(int argc, char **args);
+    int babout(int argc, char **args);
+    int band(int argc, char **args);
+    int bor(int argc, char **args);
+    int bredirect(int argc, char **args);
+    int bsilence(int argc, char **args);
+    int bset(int argc, char **args);
+    int bunset(int argc, char **args);
+    int bladd(int argc, char **args);
+    int bradd(int argc, char **args);
+    int breload(int argc, char **args);
+    int balias(int argc, char **args);
+    int bunalias(int argc, char **args);
+    int bexists(int argc, char **args);
+    int bequals(int argc, char **args);
 }
 

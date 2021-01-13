@@ -1,6 +1,6 @@
 # This is only an example
 
-set WSH_PROMPT '[\e[32m\t\e[m][\e[36m\u\e[m:\e[33m\W\e[m]\$ '
+set WSH_PROMPT '[\e[32m\t\e[m][\e[36m\u\e[m:\e[33m\W\e[m] \e[94mλ\e[m '
 
 ladd PATH "~/bin:"
 
@@ -8,8 +8,8 @@ ladd PATH "~/bin:"
 exists file "/usr/local/bin/git" && alias git "/usr/local/bin/git"
 
 # And here's another (clumsier) way
-exists file "/usr/local/bin/nvim" && set HAS_NVIM 1
-equals {HAS_NVIM} 1
+set HAS_NVIM `exists file "/usr/local/bin/nvim"`
+equals {HAS_NVIM} 0
 and; alias vim "/usr/local/bin/nvim"
 
 ladd CLASSPATH ".:/usr/local/lib/antlr-4.8-complete.jar:"
@@ -18,7 +18,8 @@ set BYOBU_PREFIX "/usr/local"
 alias antlr4 "java -jar /usr/local/lib/antlr-4.8-complete.jar"
 alias grun "java org.antlr.v4.gui.TestRig"
 alias c "clear"
+alias ls "ls -G"
 
 # How about a little greeting. And some subcommands for good measure
 echo "Welcome to \e[38;5;166mw\e[38;5;167ms\e[38;5;168mh\e[m!"
-echo "It is" `date '+%b %d'`
+echo "It is" `date '+%b %d'` "\n"

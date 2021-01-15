@@ -53,9 +53,10 @@ template <typename T> struct recursive_wrapper {
 
 using CommandList = recursive_wrapper<std::vector<command>>;
 using Value = std::variant<std::monostate, std::string, CommandList>;
+using Argument = std::vector<Value>;
 
 struct command {
-    std::vector<Value> args;
+    std::vector<Argument> args;
     bool or_output = false;
     bool pipe_output = false;
     bool and_output = false;

@@ -19,6 +19,7 @@ alias antlr4 "java -jar /usr/local/lib/antlr-4.8-complete.jar"
 alias grun "java org.antlr.v4.gui.TestRig"
 alias c "clear"
 alias ls "ls -G"
+alias grep "grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox}"
 
 # How about a little greeting. And some subcommands for good measure
 echo "Welcome to \e[38;5;166mw\e[38;5;167ms\e[38;5;168mh\e[m!"

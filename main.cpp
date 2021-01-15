@@ -35,9 +35,10 @@ void process_keypress(char);
 void files_in_dir(string);
 void execute_script(string);
 void suggest(int);
-void cmd_enter(string, bool);
-bool process_esc_seq();
+void cmd_enter(string);
+void cmd_launch(std::vector<command>, bool);
 int cmd_execute(char**, bool, bool);
+bool process_esc_seq();
 string replace_variables(string&);
 string parse_path_file(string);
 
@@ -54,6 +55,7 @@ bool pipe_output = false;
 bool or_output   = false;
 bool and_output  = false;
 bool bg_command  = false;
+bool with_var    = false;
 bool suggesting  = false;
 bool control_c   = false;
 bool subcommand  = false;
@@ -407,21 +409,25 @@ std::vector<string> flatten_alias(std::vector<command> tokens) {
     auto cmd = tokens.front();
 
     for (int i = 0; i < cmd.args.size(); ++i) {
-        auto arg = cmd.args[i];
+        Argument arg = cmd.args[i];
+        string sub;
 
-        if (std::holds_alternative<string>(arg)) {
-            out.push_back(std::get<string>(arg));
+        for (int j = 0; j < arg.size(); ++j) {
+            auto arg_component = arg[j];
+
+            if (std::holds_alternative<string>(arg_component)) {
+                sub += std::get<string>(arg_component);
+            }
         }
+
+        out.push_back(sub);
     }
 
     return out;
 }
 
 void cmd_launch(std::vector<command> commands, bool is_subcommand) {
-    string arg_str;
-
-    for (int i = 0; i < commands.size(); ++i) {
-        auto cmd = commands[i];
+    for (auto cmd : commands) {
         std::vector<string> args;
 
         if (skip_next) {
@@ -430,17 +436,18 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
         }
 
         for (int j = 0; j < cmd.args.size(); ++j) {
-            auto arg = cmd.args[j];
+            Argument arg = cmd.args[j];
+            string arg_str;
 
-            if (std::holds_alternative<string>(arg)) {
-                arg_str = std::get<string>(arg);
-            } else if (std::holds_alternative<CommandList>(arg)) {
-                cmd_launch(std::get<CommandList>(arg), true);
-                arg_str = subc_out;
+            for (auto arg_component : arg) {
+                if (std::holds_alternative<string>(arg_component)) {
+                    // Replace variables and expand tildes
+                    arg_str += replace_variables(std::get<string>(arg_component));
+                } else {
+                    cmd_launch(std::get<CommandList>(arg_component), true);
+                    arg_str += subc_out;
+                }
             }
-
-            // Replace variables and expand tildes
-            arg_str = replace_variables(arg_str);
 
             // If we are looking at the command itself...
             if (j == 0) {
@@ -457,7 +464,7 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
 
                     // Insert any args the alias may include
                     for (int k = 1; k < tokens.size(); ++k) {
-                        cmd.args.insert(cmd.args.begin() + k, tokens[k]);
+                        cmd.args.insert(cmd.args.begin() + k, {tokens[k]});
                     }
                 }
 
@@ -475,9 +482,8 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
             args.push_back(arg_str);
         }
 
-        if (cmd.pipe_output) {
+        if (cmd.pipe_output)
             pipe_output = true;
-        }
 
         char **tokens = vec_to_charptr(args);
 
@@ -496,6 +502,11 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
                 subc_out = std::to_string(last_status);
         } else {
             cmd_execute(tokens, is_subcommand, cmd.bg_command);
+
+            if (with_var) {
+                cmd_enter("without");
+                with_var = false;
+            }
         }
 
         if (cmd.and_output) {
@@ -510,7 +521,9 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
     }
 }
 
-void cmd_enter(string input, bool is_subcommand) {
+void cmd_enter(string input) {
+    trim(input);
+
     // No point in running an empty line
     if (input.empty())
         return;
@@ -576,6 +589,8 @@ void select_completions(int direction) {
 }
 
 void cmd_complete(string input) {
+    trim(input);
+
     // No point in trying to complete an empty line
     if (input.empty())
         return;
@@ -591,11 +606,12 @@ void cmd_complete(string input) {
 
     auto last_command = commands.back();
     auto last_arg = last_command.args.back();
+    auto last_arg_component = last_arg.back();
 
-    if (!std::holds_alternative<string>(last_arg))
+    if (!std::holds_alternative<string>(last_arg_component))
         return;
 
-    arg = std::get<string>(last_arg);
+    arg = std::get<string>(last_arg_component);
 
     if (last_command.args.size() == 1) {
         // Suggesting a command
@@ -668,12 +684,13 @@ void process_keypress(char ch) {
                            << matches[completion_idx];
                     cmd_str.replace(cmd_str.length() - arg.length(), len, matches[completion_idx]);
                     completing = false;
+                    sout() << "\e[J";
                     break;
                 }
 
                 sout() << std::endl << "\e[J";
 
-                cmd_enter(cmd_str, false);
+                cmd_enter(cmd_str);
                 history_idx = 0;
                 // If this command is running silently, we don't want it in our history.
                 // We also don't want it in our history if this command is the same as the
@@ -690,7 +707,7 @@ void process_keypress(char ch) {
                 cmd_complete(cmd_str);
                 break;
             case 0x0c: // Ctrl+L
-                cmd_enter("clear", false);
+                cmd_enter("clear");
                 sout() << prompt << cmd_str;
                 break;
             case EOF:
@@ -749,7 +766,9 @@ int main(int argc, char **argv) {
         { "alias",    builtins::balias },
         { "unalias",  builtins::bunalias },
         { "exists",   builtins::bexists },
-        { "equals",   builtins::bequals }
+        { "equals",   builtins::bequals },
+        { "with",     builtins::bwith },
+        { "without",  builtins::bwithout }
     };
 
     initialize_path(); // This actually initializes the PATH variable using /etc/paths

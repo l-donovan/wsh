@@ -8,6 +8,7 @@
 #define SEQ_OUTPUT_STOP   "\e]1004;5s"
 
 #define CODE_CONTINUE  0
+#define CODE_FAIL      1
 #define CODE_EXIT_OK  -1
 #define CODE_EXIT_BAD -2
 

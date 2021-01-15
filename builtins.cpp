@@ -9,6 +9,7 @@
 #include <iostream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 using std::string;
 
@@ -21,6 +22,9 @@ void load_prompt();
 bool dir_exists(const std::string&);
 bool file_exists(const std::string&);
 bool any_exists(const std::string&);
+
+std::map<string, string> set_globals;
+std::vector<string> unset_globals;
 
 namespace builtins {
     int bexit(int argc, char **argv) {
@@ -53,10 +57,8 @@ namespace builtins {
         std::cout << "Created by Luke Donovan" << std::endl << std::endl;
         std::cout << "List of builtin commands:" << std::endl;
 
-        auto it = builtins_map.begin();
-        while (it != builtins_map.end()) {
+        for (auto it = builtins_map.begin(); it != builtins_map.end(); ++it) {
             std::cout << "  " << it->first << std::endl;
-            ++it;
         }
 
         return CODE_CONTINUE;
@@ -135,10 +137,8 @@ namespace builtins {
         if (argc == 1) {
             std::cout << "Aliases:" << std::endl;
 
-            auto it = alias_map.begin();
-            while (it != alias_map.end()) {
+            for (auto it = alias_map.begin(); it != alias_map.end(); ++it) {
                 std::cout << "  " << it->first << " -> " << it->second << std::endl;
-                ++it;
             }
         } else if (argc == 2) {
             std::string name(argv[1]);
@@ -173,5 +173,42 @@ namespace builtins {
 
     int bequals(int argc, char **argv) {
         return strcmp(argv[1], argv[2]) != 0;
+    }
+
+    int bwith(int argc, char **argv) {
+        if (argc < 2)
+            return CODE_FAIL;
+
+        for (int i = 1; i < (argc - 1); i += 2) {
+            string name(argv[i]);
+
+            const char* c_var = std::getenv(argv[i]);
+
+            if (c_var == nullptr)
+                unset_globals.push_back(name);
+            else
+                set_globals[name] = string(c_var);
+
+            setenv(argv[i], argv[i + 1], true);
+        }
+
+        with_var = true;
+
+        return CODE_CONTINUE;
+    }
+
+    int bwithout(int argc, char **argv) {
+        for (auto it = set_globals.begin(); it != set_globals.end(); ++it) {
+            setenv(it->first.c_str(), it->second.c_str(), true);
+        }
+
+        for (string name : unset_globals) {
+            unsetenv(name.c_str());
+        }
+
+        set_globals.clear();
+        unset_globals.clear();
+
+        return CODE_CONTINUE;
     }
 }

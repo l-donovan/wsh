@@ -20,7 +20,7 @@ static struct termios old, current;
 static const struct command empty_command;
 
 // Initialize new terminal i/o settings
-void initTermios() {
+void init_termios() {
     tcgetattr(0, &old); // grab old terminal i/o settings
     current = old; // make new settings same as old settings
     current.c_lflag &= ~ICANON; // disable buffered i/o
@@ -29,16 +29,16 @@ void initTermios() {
 }
 
 // Restore old terminal i/o settings
-void resetTermios(void) {
+void reset_termios() {
     tcsetattr(0, TCSANOW, &old);
 }
 
-// Read 1 character - echo defines echo mode
+// Read a character, non-buffered
 char getch() {
     char ch;
-    initTermios();
+    init_termios();
     ch = getchar();
-    resetTermios();
+    reset_termios();
     return ch;
 }
 
@@ -182,29 +182,97 @@ void print_commands(std::vector<command> commands) {
         std::cout << "New command" << std::endl;
         auto cmd = commands[i];
         for (int j = 0; j < cmd.args.size(); ++j) {
-            auto arg = cmd.args[j];
-            if (std::holds_alternative<string>(arg)) {
-                std::cout << std::get<string>(arg) << std::endl;
-            } else if (std::holds_alternative<CommandList>(arg)) {
-                std::cout << "Subcommand" << std::endl;
-                print_commands(std::get<CommandList>(arg));
+            Argument arg = cmd.args[j];
+            for (int i = 0; i < arg.size(); ++i) {
+                auto arg_component = arg[i];
+                if (std::holds_alternative<string>(arg_component)) {
+                    std::cout << std::get<string>(arg_component) << std::endl;
+                } else if (std::holds_alternative<CommandList>(arg_component)) {
+                    std::cout << "Subcommand" << std::endl;
+                    print_commands(std::get<CommandList>(arg_component));
+                }
             }
         }
     }
 }
 
-std::vector<command> tokenize(string input) {
-    bool inside_quotes[input.length() + 1];
+Argument tokenize_arg(string input) {
     bool inside_squotes = false;
     bool inside_dquotes = false;
     bool inside_backticks = false;
     bool escaping = false;
-    int offset = 0;
-    int pos = 0;
-    int last = 0;
-    std::vector<command> commands;
-    string token;
-    std::smatch match;
+    char ch;
+    Argument arg;
+
+    string raw_str;
+    string out;
+
+    for (int i = 0; i < input.size(); ++i) {
+        ch = input[i];
+
+        if (escaping) {
+            escaping = false;
+            raw_str += ch;
+        } else if (inside_squotes) {
+            if (ch == '\'') {
+                out += raw_str;
+                inside_squotes = false;
+                raw_str = "";
+            } else if (ch == '\\') {
+                escaping = true;
+                raw_str += ch;
+            } else {
+                raw_str += ch;
+            }
+        } else if (inside_dquotes) {
+            if (ch == '\"') {
+                out += escape_string(raw_str);
+                inside_dquotes = false;
+                raw_str = "";
+            } else if (ch == '\\') {
+                escaping = true;
+                raw_str += ch;
+            } else {
+                raw_str += ch;
+            }
+        } else if (inside_backticks) {
+            if (ch == '`') {
+                if (!out.empty()) {
+                    arg.push_back(out);
+                    out = "";
+                }
+                arg.push_back(tokenize(raw_str));
+                inside_backticks = false;
+                raw_str = "";
+            } else if (ch == '\\') {
+                escaping = true;
+                raw_str += ch;
+            } else {
+                raw_str += ch;
+            }
+        } else {
+            if (ch == '\'')
+                inside_squotes = true;
+            else if (ch == '\"')
+                inside_dquotes = true;
+            else if (ch == '`')
+                inside_backticks = true;
+            else
+                out += ch;
+        }
+    }
+
+    if (!out.empty())
+        arg.push_back(out);
+
+    return arg;
+}
+
+void quotes_mask(string input, bool *inside_quotes) {
+    bool inside_squotes = false;
+    bool inside_dquotes = false;
+    bool inside_backticks = false;
+    bool escaping = false;
 
     inside_quotes[input.length()] = false;
 
@@ -237,9 +305,21 @@ std::vector<command> tokenize(string input) {
                 inside_backticks = true;
         }
     }
+}
+
+std::vector<command> tokenize(string input) {
+    int offset = 0;
+    int pos = 0;
+    int last = 0;
+    std::vector<command> commands;
+    string token;
+    std::smatch match;
+
+    bool inside_quotes[input.length() + 1];
+    quotes_mask(input, inside_quotes);
 
     struct command cmd = empty_command;
-    std::vector<Value> args;
+    std::vector<Argument> args;
     std::regex token_separator("((?:\\s*(?:;|\\|\\||\\||&&|&)\\s*)|\\s+)");
     input += ';';
     string::const_iterator search_start(input.cbegin());
@@ -262,27 +342,13 @@ std::vector<command> tokenize(string input) {
         if (text.empty())
             continue;
 
-        if (text.front() == '\'' && text.back() == '\'') {
-            // Single-quoted string
-            text = text.substr(1, text.length() - 2);
-            args.push_back(text);
-        } else if (text.front() == '"' && text.back() == '"') {
-            // Double-quoted string
-            text = text.substr(1, text.length() - 2);
-            text = escape_string(text);
-            args.push_back(text);
-        } else if (text.front() == '`' && text.back() == '`') {
-            // Subcommand
-            text = text.substr(1, text.length() - 2);
-            args.push_back(tokenize(text));
-        } else {
-            // Plain un-quoted text
-            args.push_back(text);
-        }
+        args.push_back(tokenize_arg(text));
 
-        if (separator == ";") {
-            // Nothing special, sequential command separator
-        } else if (separator == "||") {
+        // Only a whitespace separator, our command isn't done yet
+        if (separator.empty())
+            continue;
+
+        if (separator == "||") {
             // Conditional OR separator
             cmd.or_output = true;
         } else if (separator == "|") {
@@ -294,9 +360,6 @@ std::vector<command> tokenize(string input) {
         } else if (separator == "&") {
             // Send to background
             cmd.bg_command = true;
-        } else {
-            // Only a whitespace separator, our command isn't done yet
-            continue;
         }
 
         cmd.args = args;

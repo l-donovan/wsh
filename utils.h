@@ -22,6 +22,7 @@ std::vector<std::string> filter_prefix(const std::map<std::string, std::string>&
 int token_separator(std::string);
 std::vector<command> tokenize(std::string);
 std::string escape_string(std::string);
+std::string replace_variables(std::string&);
 void print_commands(std::vector<command> commands);
 std::vector<std::string> complete_path(std::string path);
 void get_cursor_pos(int*, int*);

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <limits.h>
 #include <map>
+#include <pwd.h>
 #include <regex>
 #include <string>
 #include <sys/stat.h>
@@ -177,6 +178,39 @@ string escape_string(string str) {
     return output;
 }
 
+string replace_variables(string &input) {
+    string output(input);
+    int offset = 0;
+
+    // Replace with environment variables
+    std::smatch match;
+    std::regex variable("\\{(\\w+)\\}");
+    string::const_iterator search_start(input.cbegin());
+
+    while (regex_search(search_start, input.cend(), match, variable)) {
+        const char* c_var = std::getenv(match[1].str().c_str());
+        string var(c_var ?: "");
+        output.replace(match.position() + offset, match.length(), var);
+        offset += match.position() + var.length();
+        search_start = match.suffix().first;
+    }
+
+    // Expand home directory
+    std::regex tilde("~");
+    search_start = input.cbegin();
+    struct passwd *pw = getpwuid(getuid());
+    string home(pw->pw_dir);
+    offset = 0;
+
+    while (regex_search(search_start, input.cend(), match, tilde)) {
+        output.replace(match.position() + offset, match.length(), home);
+        offset += match.position() + home.length();
+        search_start = match.suffix().first;
+    }
+
+    return output;
+}
+
 void print_commands(std::vector<command> commands) {
     for (int i = 0; i < commands.size(); ++i) {
         std::cout << "New command" << std::endl;
@@ -205,7 +239,6 @@ Argument tokenize_arg(string input) {
     Argument arg;
 
     string raw_str;
-    string out;
 
     for (int i = 0; i < input.size(); ++i) {
         ch = input[i];
@@ -215,9 +248,10 @@ Argument tokenize_arg(string input) {
             raw_str += ch;
         } else if (inside_squotes) {
             if (ch == '\'') {
-                out += raw_str;
-                inside_squotes = false;
+                raw_str += ch;
+                arg.push_back(raw_str);
                 raw_str = "";
+                inside_squotes = false;
             } else if (ch == '\\') {
                 escaping = true;
                 raw_str += ch;
@@ -226,9 +260,10 @@ Argument tokenize_arg(string input) {
             }
         } else if (inside_dquotes) {
             if (ch == '\"') {
-                out += escape_string(raw_str);
-                inside_dquotes = false;
+                raw_str += ch;
+                arg.push_back(raw_str);
                 raw_str = "";
+                inside_dquotes = false;
             } else if (ch == '\\') {
                 escaping = true;
                 raw_str += ch;
@@ -237,13 +272,9 @@ Argument tokenize_arg(string input) {
             }
         } else if (inside_backticks) {
             if (ch == '`') {
-                if (!out.empty()) {
-                    arg.push_back(out);
-                    out = "";
-                }
                 arg.push_back(tokenize(raw_str));
-                inside_backticks = false;
                 raw_str = "";
+                inside_backticks = false;
             } else if (ch == '\\') {
                 escaping = true;
                 raw_str += ch;
@@ -251,19 +282,34 @@ Argument tokenize_arg(string input) {
                 raw_str += ch;
             }
         } else {
-            if (ch == '\'')
+            if (ch == '\'') {
+                if (!raw_str.empty()) {
+                    arg.push_back(raw_str);
+                    raw_str = "";
+                }
+                raw_str += ch;
                 inside_squotes = true;
-            else if (ch == '\"')
+            } else if (ch == '\"') {
+                if (!raw_str.empty()) {
+                    arg.push_back(raw_str);
+                    raw_str = "";
+                }
+                raw_str += ch;
                 inside_dquotes = true;
-            else if (ch == '`')
+            } else if (ch == '`') {
+                if (!raw_str.empty()) {
+                    arg.push_back(raw_str);
+                    raw_str = "";
+                }
                 inside_backticks = true;
-            else
-                out += ch;
+            } else {
+                raw_str += ch;
+            }
         }
     }
 
-    if (!out.empty())
-        arg.push_back(out);
+    if (!raw_str.empty())
+        arg.push_back(raw_str);
 
     return arg;
 }

@@ -39,7 +39,6 @@ void cmd_enter(string);
 void cmd_launch(std::vector<command>, bool);
 int cmd_execute(char**, bool, bool);
 bool process_esc_seq();
-string replace_variables(string&);
 string parse_path_file(string);
 
 char c;
@@ -64,9 +63,6 @@ int pipefd_input[2];
 int pipefd_output[2];
 int pipefd_subc[2];
 char subc_buf[1024];
-
-struct passwd *pw = getpwuid(getuid());
-const char *homedir = pw->pw_dir;
 
 std::map<string, string> executable_map;
 std::map<string, string> alias_map;
@@ -170,7 +166,8 @@ void load_rc() {
         return;
     }
 
-    string home_path(homedir);
+    struct passwd *pw = getpwuid(getuid());
+    string home_path(pw->pw_dir);
     home_path += '/';
     home_path += RC_FILENAME;
 
@@ -346,38 +343,6 @@ bool process_esc_seq() {
     return false;
 }
 
-string replace_variables(string &input) {
-    string output(input);
-    int offset = 0;
-
-    // Replace with environment variables
-    std::smatch match;
-    std::regex variable("\\{(\\w+)\\}");
-    string::const_iterator search_start(input.cbegin());
-
-    while (regex_search(search_start, input.cend(), match, variable)) {
-        const char* c_var = std::getenv(match[1].str().c_str());
-        string var(c_var ?: "");
-        output.replace(match.position() + offset, match.length(), var);
-        offset += match.position() + var.length();
-        search_start = match.suffix().first;
-    }
-
-    // Expand home directory
-    std::regex tilde("~");
-    search_start = input.cbegin();
-    string home(homedir);
-    offset = 0;
-
-    while (regex_search(search_start, input.cend(), match, tilde)) {
-        output.replace(match.position() + offset, match.length(), home);
-        offset += match.position() + home.length();
-        search_start = match.suffix().first;
-    }
-
-    return output;
-}
-
 char** vec_to_charptr(std::vector<string> vec_tokens) {
     // Now we have to translate our vector into a nullptr-terminated char**
     char** tokens = (char**) malloc((vec_tokens.size() + 1) * sizeof(char*));
@@ -441,8 +406,20 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
 
             for (auto arg_component : arg) {
                 if (std::holds_alternative<string>(arg_component)) {
+                    string val = std::get<string>(arg_component);
+
                     // Replace variables and expand tildes
-                    arg_str += replace_variables(std::get<string>(arg_component));
+                    if (val.length() >= 2 && val.front() == '\'' && val.back() == '\'') {
+                        val = val.substr(1, val.length() - 2);
+                    } else if (val.length() >= 2 && val.front() == '\"' && val.back() == '\"') {
+                        val = val.substr(1, val.length() - 2);
+                        val = escape_string(val);
+                        val = replace_variables(val);
+                    } else {
+                        val = replace_variables(val);
+                    }
+
+                    arg_str += val;
                 } else {
                     cmd_launch(std::get<CommandList>(arg_component), true);
                     arg_str += subc_out;

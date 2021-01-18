@@ -30,13 +30,16 @@ namespace builtins {
     int bexit(int argc, char **argv) {
         std::cout << "Goodbye!" << std::endl;
 
-        if (argv[1] == nullptr)
+        if (argc < 2)
             return CODE_EXIT_OK;
         else
             return -(atoi(argv[1]) + 1);
     }
 
     int bcd(int argc, char **argv) {
+        if (argc < 2)
+            return CODE_FAIL;
+
         twd = std::filesystem::current_path();
 
         if (strcmp(argv[1], "-") == 0) {
@@ -83,24 +86,36 @@ namespace builtins {
     }
 
     int bsilence(int argc, char **argv) {
+        if (argc < 2)
+            return CODE_FAIL;
+
         echo_input = strcmp(argv[1], "true");
 
         return CODE_CONTINUE;
     }
 
     int bset(int argc, char **argv) {
+        if (argc < 3)
+            return CODE_FAIL;
+
         setenv(argv[1], argv[2], true);
 
         return CODE_CONTINUE;
     }
 
     int bunset(int argc, char **argv) {
+        if (argc < 2)
+            return CODE_FAIL;
+
         unsetenv(argv[1]);
 
         return CODE_CONTINUE;
     }
 
     int bladd(int argc, char **argv) {
+        if (argc < 3)
+            return CODE_FAIL;
+
         const char* c_var = std::getenv(argv[1]);
 
         std::string var(c_var ?: "");
@@ -114,6 +129,9 @@ namespace builtins {
     }
 
     int bradd(int argc, char **argv) {
+        if (argc < 3)
+            return CODE_FAIL;
+
         const char* c_var = std::getenv(argv[1]);
 
         std::string var(c_var ?: "");
@@ -154,6 +172,9 @@ namespace builtins {
     }
 
     int bunalias(int argc, char **argv) {
+        if (argc < 2)
+            return CODE_FAIL;
+
         std::string name(argv[1]);
 
         alias_map.erase(name);
@@ -162,6 +183,9 @@ namespace builtins {
     }
 
     int bexists(int argc, char **argv) {
+        if (argc < 3)
+            return CODE_FAIL;
+
         if (strcmp(argv[1], "file") == 0)
             return !file_exists(argv[2]);
 
@@ -172,6 +196,9 @@ namespace builtins {
     }
 
     int bequals(int argc, char **argv) {
+        if (argc < 3)
+            return CODE_FAIL;
+
         return strcmp(argv[1], argv[2]) != 0;
     }
 

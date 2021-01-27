@@ -18,7 +18,7 @@
 using std::string;
 
 static struct termios old, current;
-static const struct command empty_command;
+static const struct Command empty_command;
 
 // Initialize new terminal i/o settings
 void init_termios() {
@@ -107,7 +107,7 @@ std::vector<string> filter_prefix(const std::map<string, string>& map, const str
 string escape_string(string str) {
     string output = str;
 
-    std::regex escapes("\\\\([\\\\\"'\\$adehHjlnrstT@uvVwW])");
+    std::regex escapes("\\\\([\\\\\"'\\{\\}\\$adehHjlnrstT@uvVwW])");
     string::const_iterator search_start(str.cbegin());
     std::smatch match;
     int offset = 0;
@@ -115,8 +115,8 @@ string escape_string(string str) {
     while (regex_search(search_start, str.cend(), match, escapes)) {
         std::string replacement;
 
-        if (match[1] == "\\" || match[1] == "\"" || match[1] == "\'") {
-            // Replacement of literal backslashes and quotes
+        if (match[1] == "\\" || match[1] == "\"" || match[1] == "\'" || match[1] == "{" || match[1] == "}") {
+            // Replacement of literal backslashes, quotes, and brackets
             replacement = match[1];
         } else if (match[1] == "n") {
             replacement = "\n";
@@ -184,14 +184,14 @@ string replace_variables(string &input) {
 
     // Replace with environment variables
     std::smatch match;
-    std::regex variable("\\{(\\w+)\\}");
+    std::regex variable("(?:^|[^\\\\])(?:\\\\\\\\)*\\{(\\w+)\\}");
     string::const_iterator search_start(input.cbegin());
 
     while (regex_search(search_start, input.cend(), match, variable)) {
         const char* c_var = std::getenv(match[1].str().c_str());
         string var(c_var ?: "");
-        output.replace(match.position() + offset, match.length(), var);
-        offset += match.position() + var.length();
+        output.replace(match.position(1) - 1 + offset, match.length(1) + 2, var);
+        offset += match.position(1) - 1 + var.length();
         search_start = match.suffix().first;
     }
 
@@ -211,10 +211,58 @@ string replace_variables(string &input) {
     return output;
 }
 
-void print_commands(std::vector<command> commands) {
+std::vector<string> expand_brackets(string input) {
+    std::vector<string> out;
+
+    std::smatch match;
+    std::regex list_item("([^,]+)(?:,|$)");
+    string::const_iterator search_start(input.cbegin());
+
+    while (regex_search(search_start, input.cend(), match, list_item)) {
+        string var = match[1].str();
+        out.push_back(var);
+        search_start = match.suffix().first;
+    }
+
+    return out;
+}
+
+std::vector<Argument> expand_argument(Argument arg) {
+    std::vector<Argument> out;
+
+    for (auto component : arg) {
+        if (std::holds_alternative<string>(component)) {
+            string val = std::get<string>(component);
+
+            if (val.length() > 2 &&
+                !(val.front() == '\"' && val.back() == '\"') &&
+                !(val.front() == '\'' && val.back() == '\'')) {
+                std::smatch match;
+                std::regex array("(?:^|[^\\\\])(?:\\\\\\\\)*\\[(.+?)\\]");
+
+                if (regex_search(val.cbegin(), val.cend(), match, array)) {
+                    string arr = match[1].str();
+                    std::vector<string> options = expand_brackets(arr);
+
+                    for (string option : options) {
+                        string output(val);
+                        output.replace(match.position(1) - 1, match.length(1) + 2, option);
+                        out.push_back({output});
+                    }
+
+                    return out;
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
+void print_commands(std::vector<Command> commands) {
     for (int i = 0; i < commands.size(); ++i) {
         std::cout << "New command" << std::endl;
-        auto cmd = commands[i];
+        Command cmd = commands[i];
         for (int j = 0; j < cmd.args.size(); ++j) {
             Argument arg = cmd.args[j];
             for (int i = 0; i < arg.size(); ++i) {
@@ -353,18 +401,18 @@ void quotes_mask(string input, bool *inside_quotes) {
     }
 }
 
-std::vector<command> tokenize(string input) {
+std::vector<Command> tokenize(string input) {
     int offset = 0;
     int pos = 0;
     int last = 0;
-    std::vector<command> commands;
+    std::vector<Command> commands;
     string token;
     std::smatch match;
 
     bool inside_quotes[input.length() + 1];
     quotes_mask(input, inside_quotes);
 
-    struct command cmd = empty_command;
+    struct Command cmd = empty_command;
     std::vector<Argument> args;
     std::regex token_separator("((?:\\s*(?:;|\\|\\||\\||&&|&)\\s*)|\\s+)");
     input += ';';

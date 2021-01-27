@@ -9,3 +9,4 @@
 #define SHELL_NAME     "wsh"
 #define DEFAULT_PROMPT "$ "
 #define RC_FILENAME    ".wshrc"
+#define HIST_FILENAME  ".wsh_history"

@@ -22,3 +22,18 @@
 
 #define INSERT_END   -1
 
+#define FLAG_EXIT    1 <<  0
+#define FLAG_CD      1 <<  1
+#define FLAG_SKIP    1 <<  2
+#define FLAG_SILENCE 1 <<  3
+#define FLAG_SET     1 <<  4
+#define FLAG_UNSET   1 <<  5
+#define FLAG_RELOAD  1 <<  6
+#define FLAG_ALIAS   1 <<  7
+#define FLAG_WITH_S  1 <<  8
+#define FLAG_WITH_U  1 <<  9
+#define FLAG_WITHOUT 1 << 10
+#define FLAG_RESUME  1 << 11
+#define FLAG_KILL    1 << 12
+#define FLAG_RUN     1 << 13
+#define FLAG_SOURCE  1 << 14

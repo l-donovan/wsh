@@ -1,4 +1,5 @@
 #!/Users/ldonovan/projects/wsh/wsh
 
 echo "Welcome to {SHELL}!" | cowsay
+echo {PATH}
 

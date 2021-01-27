@@ -18,6 +18,7 @@
 #include <regex>
 #include <string>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -36,8 +37,8 @@ void files_in_dir(string);
 void execute_script(string);
 void suggest(int);
 void cmd_enter(string);
-void cmd_launch(std::vector<command>, bool);
-int cmd_execute(char**, bool, bool);
+void cmd_launch(std::vector<Command>, bool);
+int cmd_execute(int, char**, bool, bool);
 bool process_esc_seq();
 string parse_path_file(string);
 
@@ -56,7 +57,7 @@ bool and_output  = false;
 bool bg_command  = false;
 bool with_var    = false;
 bool suggesting  = false;
-bool control_c   = false;
+bool getch_skip  = false;
 bool subcommand  = false;
 bool completing  = false;
 int pipefd_input[2];
@@ -66,7 +67,9 @@ char subc_buf[1024];
 
 std::map<string, string> executable_map;
 std::map<string, string> alias_map;
-std::map<string, int (*)(int, char**)> builtins_map;
+std::map<string, int (*)(int, char**, unsigned int*, char*, char*)> builtins_map;
+std::map<string, string> set_globals;
+std::vector<string> unset_globals;
 std::vector<string> history;
 std::vector<string> matches;
 string esc_seq;
@@ -74,6 +77,11 @@ string cmd_str;
 string prompt;
 string subc_out;
 string arg;
+string prev_dir;
+pid_t pid = 0;
+pid_t active_pid = 0;
+pid_t last_pid = 0;
+pid_t suspended_pid = 0;
 
 NullStream null;
 
@@ -177,9 +185,38 @@ void load_rc() {
     }
 }
 
-int cmd_execute(char **args, bool is_subcommand, bool is_background) {
-    pid_t pid, wpid;
+void load_history() {
+    struct passwd *pw = getpwuid(getuid());
+    string history_path(pw->pw_dir);
+    history_path += '/';
+    history_path += HIST_FILENAME;
+
+    if (file_exists(history_path)) {
+        string str;
+        std::fstream fin(history_path, std::fstream::in);
+
+        while (getline(fin, str))
+            history.push_back(str);
+    }
+}
+
+void save_history() {
+    struct passwd *pw = getpwuid(getuid());
+    string history_path(pw->pw_dir);
+    history_path += '/';
+    history_path += HIST_FILENAME;
+
+    std::ofstream fout(history_path);
+
+    for (auto it = history.begin(); it != history.end(); ++it) {
+        fout << *it << std::endl;
+    }
+}
+
+int cmd_execute(int argc, char **args, bool is_subcommand, bool is_background) {
+    pid_t wpid;
     int status;
+    with_var = false;
 
     if (pipe_input || pipe_output) {
         int tmp_a = pipefd_input[0], tmp_b = pipefd_input[1];
@@ -190,6 +227,10 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
         pipefd_output[READ_END] = tmp_a;
         pipefd_output[WRITE_END] = tmp_b;
     }
+
+    auto flags = (unsigned int*) mmap(NULL, sizeof(unsigned int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    auto flag_arg_a = (char*) mmap(NULL, sizeof(char) * 1024, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    auto flag_arg_b = (char*) mmap(NULL, sizeof(char) * 1024, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
     pid = fork();
 
@@ -217,24 +258,131 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
             dup2(pipefd_subc[WRITE_END], STDERR_FILENO);
         }
 
-        if (execv(args[0], args) == -1) {
-            // We would update some sort of status here or something
-            perror(args[0]);
-        }
+        // Find if this is a builtin command
+        auto it = builtins_map.find(args[0]);
+        if (it != builtins_map.end()) {
+            auto builtin_fn = it->second;
+            int result = builtin_fn(argc, args, flags, flag_arg_a, flag_arg_b);
 
-        exit(EXIT_FAILURE);
+            exit(result);
+        } else {
+            if (execv(args[0], args) == -1) {
+                // We would update some sort of status here or something
+                perror(args[0]);
+            }
+
+            exit(EXIT_FAILURE);
+        }
     } else if (pid < 0) {
         perror("Error when forking child process");
     } else {
         // Parent process
-        // We want to run waitpid before checking the conditions, hence the do {} while
+
+        active_pid = pid;
 
         if (!is_background) {
+            // We want to run waitpid before checking the conditions, hence the do {} while
             do {
                 wpid = waitpid(pid, &status, WUNTRACED);
             } while (!WIFEXITED(status) && !WIFSIGNALED(status));
 
             last_status = WEXITSTATUS(status);
+            last_pid = active_pid;
+            active_pid = 0;
+
+            // Check for flags set by child process
+            if (*flags & FLAG_EXIT)
+                exit(last_status);
+
+            if (*flags & FLAG_CD) {
+                std::filesystem::current_path(flag_arg_a);
+                prev_dir = string(flag_arg_b);
+            }
+
+            if (*flags & FLAG_SKIP)
+                skip_next = true;
+
+            if (*flags & FLAG_SILENCE)
+                echo_input = *flag_arg_a;
+
+            if (*flags & FLAG_SET)
+                setenv(flag_arg_a, flag_arg_b, true);
+
+            if (*flags & FLAG_UNSET)
+                unsetenv(flag_arg_a);
+
+            if (*flags & FLAG_RELOAD) {
+                load_path();
+                load_prompt();
+            }
+
+            if (*flags & FLAG_ALIAS) {
+                if (*flag_arg_b == '\0')
+                    alias_map.erase(string(flag_arg_a));
+                else
+                    alias_map.emplace(string(flag_arg_a), string(flag_arg_b));
+            }
+
+            if (*flags & FLAG_WITH_S) {
+                set_globals[string(flag_arg_a)] = string(std::getenv(flag_arg_a));
+                setenv(flag_arg_a, flag_arg_b, true);
+                with_var = true;
+            }
+
+            if (*flags & FLAG_WITH_U) {
+                unset_globals.push_back(string(flag_arg_a));
+                setenv(flag_arg_a, flag_arg_b, true);
+                with_var = true;
+            }
+
+            if (*flags & FLAG_WITHOUT) {
+                for (auto it = set_globals.begin(); it != set_globals.end(); ++it) {
+                    setenv(it->first.c_str(), it->second.c_str(), true);
+                }
+
+                for (string name : unset_globals) {
+                    unsetenv(name.c_str());
+                }
+
+                set_globals.clear();
+                unset_globals.clear();
+            }
+
+            if (*flags & FLAG_RESUME) {
+                kill(suspended_pid, SIGCONT);
+                active_pid = suspended_pid;
+
+                do {
+                    wpid = waitpid(active_pid, &status, WUNTRACED);
+                } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+
+                last_status = WEXITSTATUS(status);
+                last_pid = active_pid;
+                active_pid = 0;
+            }
+
+            if (*flags & FLAG_KILL) {
+                pid_t this_pid = atoi(flag_arg_a);
+                kill(this_pid, SIGTERM);
+                sout() << "\e[1m" << "Killed PID " << this_pid << "\e[m" << std::endl;
+            }
+
+            if (*flags & FLAG_RUN) {
+                string cmd = "wsh ";
+                cmd += flag_arg_a;
+                cmd_enter(string("wsh ") + flag_arg_a);
+            }
+
+            if (*flags & FLAG_SOURCE) {
+                bool echo_before = echo_input;
+                echo_input = false;
+                execute_script(string(flag_arg_a));
+                echo_input = echo_before;
+            }
+
+            munmap(flags, sizeof(unsigned int));
+            munmap(flag_arg_a, sizeof(char) * 1024);
+            munmap(flag_arg_b, sizeof(char) * 1024);
 
             if (pipe_input) {
                 close(pipefd_input[READ_END]);
@@ -254,9 +402,8 @@ int cmd_execute(char **args, bool is_subcommand, bool is_background) {
                 }
 
                 // Trailing newlines break lots of things with subcommands
-                if (subc_out.back() == '\n') {
+                if (subc_out.back() == '\n')
                     subc_out.pop_back();
-                }
 
                 close(pipefd_subc[READ_END]);
                 pipe(pipefd_subc);
@@ -352,7 +499,7 @@ char** vec_to_charptr(std::vector<string> vec_tokens) {
     }
 
     for (int i = 0; i < vec_tokens.size(); ++i) {
-        std::string arg = vec_tokens[i];
+        string arg = vec_tokens[i];
 
         tokens[i] = (char*) malloc((arg.length() + 1) * sizeof(char));
         if (!tokens[i]) {
@@ -365,43 +512,41 @@ char** vec_to_charptr(std::vector<string> vec_tokens) {
 
     tokens[vec_tokens.size()] = nullptr;
 
+    // This fixes some weird behavior with `which` for some reason
+    sout().flush();
+
     return tokens;
 }
 
-std::vector<string> flatten_alias(std::vector<command> tokens) {
-    std::vector<string> out;
+void cmd_launch(std::vector<Command> commands, bool is_subcommand) {
+    bool aliased = false;
 
-    auto cmd = tokens.front();
-
-    for (int i = 0; i < cmd.args.size(); ++i) {
-        Argument arg = cmd.args[i];
-        string sub;
-
-        for (int j = 0; j < arg.size(); ++j) {
-            auto arg_component = arg[j];
-
-            if (std::holds_alternative<string>(arg_component)) {
-                sub += std::get<string>(arg_component);
-            }
-        }
-
-        out.push_back(sub);
-    }
-
-    return out;
-}
-
-void cmd_launch(std::vector<command> commands, bool is_subcommand) {
-    for (auto cmd : commands) {
+    int c = 0;
+    while (c < commands.size()) {
+        Command cmd = commands[c];
         std::vector<string> args;
 
         if (skip_next) {
             skip_next = false;
+            ++c;
             continue;
         }
 
-        for (int j = 0; j < cmd.args.size(); ++j) {
-            Argument arg = cmd.args[j];
+        for (int i = 0; i < cmd.args.size(); ++i) {
+            Argument arg = cmd.args[i];
+            std::vector<Argument> new_args = expand_argument(arg);
+
+            if (!new_args.empty()) {
+                cmd.args.erase(cmd.args.begin() + i);
+
+                for (int j = 0; j < new_args.size(); ++j) {
+                    cmd.args.insert(cmd.args.begin() + i + j, new_args[j]);
+                }
+            }
+        }
+
+        for (int i = 0; i < cmd.args.size(); ++i) {
+            Argument arg = cmd.args[i];
             string arg_str;
 
             for (auto arg_component : arg) {
@@ -413,10 +558,11 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
                         val = val.substr(1, val.length() - 2);
                     } else if (val.length() >= 2 && val.front() == '\"' && val.back() == '\"') {
                         val = val.substr(1, val.length() - 2);
-                        val = escape_string(val);
                         val = replace_variables(val);
+                        val = escape_string(val);
                     } else {
                         val = replace_variables(val);
+                        val = escape_string(val);
                     }
 
                     arg_str += val;
@@ -427,21 +573,35 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
             }
 
             // If we are looking at the command itself...
-            if (j == 0) {
+            if (i == 0) {
                 // and the command has an alias...
-                auto alias = alias_map.find(arg_str);
-                if (alias != alias_map.end()) {
-                    // substitute the alias
-                    arg_str = alias->second;
 
-                    // Tokenize the alias
-                    std::vector<command> alias_tokens = tokenize(arg_str);
-                    std::vector<string> tokens = flatten_alias(alias_tokens);
-                    arg_str = tokens.front();
+                if (aliased) {
+                    aliased = false;
+                } else {
+                    auto alias = alias_map.find(arg_str);
+                    if (alias != alias_map.end()) {
+                        // Substitute the alias
+                        arg_str = alias->second;
 
-                    // Insert any args the alias may include
-                    for (int k = 1; k < tokens.size(); ++k) {
-                        cmd.args.insert(cmd.args.begin() + k, {tokens[k]});
+                        // Tokenize the alias
+                        std::vector<Command> alias_tokens = tokenize(arg_str);
+
+                        // Erase the current command
+                        commands.erase(commands.begin() + c);
+
+                        // Replace it with the new alias
+                        for (int j = 0; j < alias_tokens.size(); ++j) {
+                            Command ncmd = alias_tokens[j];
+
+                            if (j == alias_tokens.size() - 1 && cmd.args.size() > 1)
+                                ncmd.args.insert(ncmd.args.end(), cmd.args.begin() + 1, cmd.args.end());
+
+                            commands.insert(commands.begin() + c + j, ncmd);
+                        }
+
+                        aliased = true;
+                        break;
                     }
                 }
 
@@ -462,29 +622,16 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
         if (cmd.pipe_output)
             pipe_output = true;
 
+        if (aliased)
+            continue;
+
+        bool needs_without = with_var;
         char **tokens = vec_to_charptr(args);
+        cmd_execute(args.size(), tokens, is_subcommand, cmd.bg_command);
+        needs_without &= !with_var;
 
-        // Find if this is a builtin command
-        auto it = builtins_map.find(tokens[0]);
-        if (it != builtins_map.end()) {
-            auto builtin_fn = it->second;
-            int result = builtin_fn(args.size(), tokens);
-
-            if (result >= 0)
-                last_status = result;
-            else
-                exit(-result - 1);
-
-            if (is_subcommand)
-                subc_out = std::to_string(last_status);
-        } else {
-            cmd_execute(tokens, is_subcommand, cmd.bg_command);
-
-            if (with_var) {
-                cmd_enter("without");
-                with_var = false;
-            }
-        }
+        if (needs_without)
+            cmd_enter("without");
 
         if (cmd.and_output) {
             skip_next = last_status != 0;
@@ -495,6 +642,8 @@ void cmd_launch(std::vector<command> commands, bool is_subcommand) {
             skip_next = last_status == 0;
             or_output = false;
         }
+
+        ++c;
     }
 }
 
@@ -509,7 +658,7 @@ void cmd_enter(string input) {
     if (input[0] == '#')
         return;
 
-    std::vector<command> commands = tokenize(input);
+    std::vector<Command> commands = tokenize(input);
 
     cmd_launch(commands, false);
 }
@@ -576,13 +725,13 @@ void cmd_complete(string input) {
     if (input[0] == '#')
         return;
 
-    std::vector<command> commands = tokenize(input);
+    std::vector<Command> commands = tokenize(input);
 
     if (commands.empty())
         return;
 
-    auto last_command = commands.back();
-    auto last_arg = last_command.args.back();
+    Command last_command = commands.back();
+    Argument last_arg = last_command.args.back();
     auto last_arg_component = last_arg.back();
 
     if (!std::holds_alternative<string>(last_arg_component))
@@ -687,6 +836,9 @@ void process_keypress(char ch) {
                 cmd_enter("clear");
                 sout() << prompt << cmd_str;
                 break;
+            case 0x12: // Ctrl+R
+                sout() << "ctrl-r" << std::endl;
+                break;
             case EOF:
                 break;
             default:
@@ -708,7 +860,22 @@ void process_keypress(char ch) {
 void sig_int_callback(int s) {
     cmd_str.clear();
     sout() << "\e[J" << std::endl << prompt;
-    control_c = true;
+    getch_skip = true;
+}
+
+void sig_tstp_callback(int s) {
+    if (active_pid != 0) {
+        kill(active_pid, SIGSTOP);
+        suspended_pid = active_pid;
+        sout() << std::endl << "\e[1m" << "Suspended PID " << suspended_pid << "\e[m" << std::endl;
+    }
+
+    getch_skip = true;
+}
+
+void cleanup() {
+    if (pid != 0)
+        save_history();
 }
 
 int main(int argc, char **argv) {
@@ -718,6 +885,15 @@ int main(int argc, char **argv) {
     sigemptyset(&sig_int_handler.sa_mask);
     sig_int_handler.sa_flags = 0;
     sigaction(SIGINT, &sig_int_handler, NULL);
+
+    // Register our SIGTSTP handler
+    struct sigaction sig_tstp_handler;
+    sig_tstp_handler.sa_handler = sig_tstp_callback;
+    sigemptyset(&sig_tstp_handler.sa_mask);
+    sig_tstp_handler.sa_flags = 0;
+    sigaction(SIGTSTP, &sig_tstp_handler, NULL);
+
+    std::atexit(cleanup);
 
     // Setup our pipes
     pipe(pipefd_input);
@@ -745,15 +921,21 @@ int main(int argc, char **argv) {
         { "exists",   builtins::bexists },
         { "equals",   builtins::bequals },
         { "with",     builtins::bwith },
-        { "without",  builtins::bwithout }
+        { "without",  builtins::bwithout },
+        { "which",    builtins::bwhich },
+        { "fg",       builtins::bfg },
+        { "kill",     builtins::bkill },
+        { "run",      builtins::brun },
+        { "source",   builtins::bsource },
+        { "history",  builtins::bhistory },
+        { "debug",    builtins::bdebug }
     };
 
-    initialize_path(); // This actually initializes the PATH variable using /etc/paths
-    load_path();       // This reads the PATH variable to determine full paths to commands
-    load_rc();         // Here, edits could potentially be made to PATH...
-    load_path();       // hence we reload the PATH
+    if (argc < 2) {
+        initialize_path(); // This actually initializes the PATH variable using /etc/paths
+    }
 
-    load_prompt();
+    load_path(); // This reads the PATH variable to determine full paths to commands
 
     // Loading from script
     if (argc > 1) {
@@ -761,11 +943,16 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    load_rc(); // Here, edits could potentially be made to PATH...
+    load_path(); // hence we reload the PATH
+    load_prompt();
+    load_history();
+
     sout() << prompt;
 
-    while ((c = getch()) != EOF || control_c) {
+    while ((c = getch()) != EOF || getch_skip) {
         process_keypress(c);
-        control_c = false;
+        getch_skip = false;
     }
 
     return 0;

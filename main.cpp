@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <variant>
 
@@ -117,26 +118,50 @@ void execute_script(string filename) {
 string parse_path_file(string filepath) {
     string path;
 
-    if (file_exists(filepath)) {
-        std::ifstream infile(filepath);
-        string dir;
+    std::ifstream infile(filepath);
+    string dir;
 
-        while (infile >> dir)
-            path += dir + ":";
+    while (infile >> dir) {
+        path += dir + ":";
     }
 
     return path;
 }
 
 void initialize_path() {
-    string path = parse_path_file("/etc/paths");
+    string path;
 
-    if (dir_exists("/etc/paths.d")) {
-        for (const auto & entry : std::filesystem::directory_iterator("/etc/paths.d"))
-            path += parse_path_file(entry.path());
+    if (file_exists("/etc/login.defs")) {
+        std::ifstream infile("/etc/login.defs");
+        string target_key = geteuid() == 0 ? "ENV_SUPATH" : "ENV_PATH";
+        string line;
 
-        if (!path.empty())
-            path.pop_back();
+        while (std::getline(infile, line)) {
+            if (line.empty() || line[0] == '#')
+                continue;
+
+            std::istringstream iss(line);
+            string key, val;
+            iss >> key >> val;
+
+            if (key == target_key) {
+                size_t pos = val.find('=');
+                if (pos != string::npos) {
+                    path = val.substr(pos + 1, string::npos);
+                    break;
+                }
+            }
+        }
+    } else if (file_exists("/etc/paths")) {
+        path = parse_path_file("/etc/paths");
+
+        if (dir_exists("/etc/paths.d")) {
+            for (const auto & entry : std::filesystem::directory_iterator("/etc/paths.d"))
+                path += parse_path_file(entry.path());
+
+            if (!path.empty())
+                path.pop_back();
+        }
     }
 
     setenv("PATH", path.c_str(), true);

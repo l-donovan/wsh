@@ -485,6 +485,25 @@ bool process_esc_seq() {
         }
 
         return true;
+    } else if (std::regex_match(esc_seq, match, std::regex("\\[(?:(\\d)~|(H))"))) {
+        if (match[1] == "1" || match[1] == "7" || match[1] == "H") {
+            if (input_idx > 0) {
+                sout() << "\e[" << input_idx << "D";
+                input_idx = 0;
+            } else if (input_idx == INSERT_END && !cmd_str.empty()) {
+                sout() << "\e[" << cmd_str.length() << "D";
+                input_idx = 0;
+            }
+        } else if (match[1] == "3") {
+            std::cout << "DELETE" << std::endl;
+        } else if (match[1] == "4" || match[1] == "8") {
+            if (input_idx != INSERT_END) {
+                sout() << "\e[" << (cmd_str.length() - input_idx) << "C";
+                input_idx = INSERT_END;
+            }
+        }
+
+        return true;
     }
 
     return false;
@@ -859,6 +878,7 @@ void process_keypress(char ch) {
 
 void sig_int_callback(int s) {
     cmd_str.clear();
+    in_esc_seq = false;
     sout() << "\e[J" << std::endl << prompt;
     getch_skip = true;
 }

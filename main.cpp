@@ -73,6 +73,7 @@ std::map<string, string> set_globals;
 std::vector<string> unset_globals;
 std::vector<string> history;
 std::vector<string> matches;
+std::vector<pid_t> suspended_pids;
 string esc_seq;
 string cmd_str;
 string prompt;
@@ -388,8 +389,12 @@ int cmd_execute(int argc, char **args, bool is_subcommand, bool is_background) {
 
             if (*flags & FLAG_KILL) {
                 pid_t this_pid = atoi(flag_arg_a);
+                int idx = atoi(flag_arg_b);
+
                 kill(this_pid, SIGTERM);
-                sout() << "\e[1m" << "Killed PID " << this_pid << "\e[m" << std::endl;
+
+                if (idx != -1)
+                    suspended_pids[idx] = -1;
             }
 
             if (*flags & FLAG_RUN) {
@@ -908,11 +913,28 @@ void sig_int_callback(int s) {
     getch_skip = true;
 }
 
+int next_pid_slot() {
+    for (int i = 0; i < suspended_pids.size(); ++i) {
+        if (suspended_pids[i] == -1)
+            return i;
+    }
+
+    return -1;
+}
+
 void sig_tstp_callback(int s) {
     if (active_pid != 0) {
         kill(active_pid, SIGSTOP);
-        suspended_pid = active_pid;
-        sout() << std::endl << "\e[1m" << "Suspended PID " << suspended_pid << "\e[m" << std::endl;
+
+        int idx = next_pid_slot();
+        if (idx == -1) {
+            suspended_pids.push_back(active_pid);
+            idx = suspended_pids.size() - 1;
+        } else {
+            suspended_pids[idx] = active_pid;
+        }
+
+        sout() << std::endl << "\e[1m" << "Suspended PID [" << idx << "] " << active_pid << "\e[m" << std::endl;
     }
 
     getch_skip = true;

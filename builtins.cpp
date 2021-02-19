@@ -276,13 +276,26 @@ namespace builtins {
 
         pid_t pid;
 
-        if (strcmp("%", argv[1]) == 0)
-            pid = suspended_pid;
-        else
+        int idx = -1;
+
+        if (strlen(argv[1]) > 1 && argv[1][0] == '%') {
+            idx = atoi(argv[1] + 1);
+            pid = suspended_pids[idx];
+
+            if (pid == -1) {
+                std::cerr << "Job is not running!" << std::endl;
+                return CODE_FAIL;
+            } else {
+                std::cout << "\e[1m" << "Killed PID " << pid << "\e[m" << std::endl;
+            }
+        } else {
             pid = atoi(argv[1]);
+            std::cout << "\e[1m" << "Killed PID " << pid << "\e[m" << std::endl;
+        }
 
         *flags |= FLAG_KILL;
         snprintf(flag_arg_a, sizeof(flag_arg_a), "%d", pid);
+        snprintf(flag_arg_b, sizeof(flag_arg_b), "%d", idx);
 
         return CODE_CONTINUE;
     }
